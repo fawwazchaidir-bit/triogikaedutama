@@ -31,7 +31,7 @@ async function main() {
     SELECT COALESCE("number", "id"::text) AS ref, 'total=' || "totalAmount" || ' paid=' || "paidAmount" || ' balance=' || "balanceAmount" || ' status=' || "paymentStatus" AS detail
       FROM invoices
      WHERE "balanceAmount" <> "totalAmount" - "paidAmount"
-        OR ("status" <> 'DRAFT' AND (
+        OR ("status" NOT IN ('DRAFT','SUBMITTED') AND (
               ("paidAmount" = 0 AND "paymentStatus" <> 'UNPAID')
            OR ("paidAmount" > 0 AND "paidAmount" < "totalAmount" AND "paymentStatus" <> 'PARTIALLY_PAID')
            OR ("paidAmount" = "totalAmount" AND "totalAmount" > 0 AND "paymentStatus" <> 'PAID')))`));
@@ -46,7 +46,7 @@ async function main() {
 
   add("invoice terbit/batal tanpa snapshot atau nomor", await q(`
     SELECT "id"::text AS ref, 'status=' || "status" AS detail FROM invoices
-     WHERE "status" <> 'DRAFT' AND ("number" IS NULL OR "companySnapshot" IS NULL OR "customerSnapshot" IS NULL OR "taxSnapshot" IS NULL OR "displaySnapshot" IS NULL)`));
+     WHERE "status" NOT IN ('DRAFT','SUBMITTED') AND ("number" IS NULL OR "companySnapshot" IS NULL OR "customerSnapshot" IS NULL OR "taxSnapshot" IS NULL OR "displaySnapshot" IS NULL)`));
 
   add("penghitung nomor tertinggal dari nomor terbit", await q(`
     SELECT s."scopeKey" AS ref, 'nextValue=' || s."nextValue" || ' nomor terbesar=' || m.mx AS detail

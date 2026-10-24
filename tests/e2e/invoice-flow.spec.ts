@@ -14,6 +14,13 @@ async function pdfText(res: APIResponse, name: string): Promise<string> {
   return execFileSync("pdftotext", ["-layout", f, "-"], { encoding: "utf8" }).replace(/[ \t]+/g, " ");
 }
 
+function pageSizeOf(buf: Buffer, name: string): { landscape: boolean } {
+  const f = path.join(dir, `${name}.pdf`);
+  writeFileSync(f, buf);
+  const m = /Page size:\s+([\d.]+) x ([\d.]+) pts/.exec(execFileSync("pdfinfo", [f], { encoding: "utf8" }))!;
+  return { landscape: Number(m[1]) > Number(m[2]) };
+}
+
 async function fillDemiChefInvoice(page: Page, qty: string) {
   await page.goto("/invoices/new");
   await page.getByRole("combobox", { name: "Pelanggan" }).fill("Bima");
@@ -31,7 +38,7 @@ test("Finance: buat → draft → preview → terbitkan → unduh PDF → bayar 
 
   // Isian otomatis dari master + perhitungan langsung
   await expect(page.getByLabel("Harga satuan baris 1")).toHaveValue("2.000.000");
-  await expect(page.getByLabel("Deskripsi (tampil di invoice)")).toHaveValue("Biaya Diklat & Uji Kompetensi\nBidang Food Production\n(Skema Demi Chef)");
+  await expect(page.getByLabel("Product Description (dinamis)")).toHaveValue("Biaya Diklat & Uji Kompetensi\nBidang Food Production\n(Skema Demi Chef)");
   await expect(page.getByText("Empat Belas Juta Rupiah")).toBeVisible();
   await expect(page.getByText("Rp 14.000.000").first()).toBeVisible();
   await expect(page.getByLabel("Tanggal jatuh tempo")).toContainText(/\d{2}\/\d{2}\/\d{4}/);
@@ -52,10 +59,10 @@ test("Finance: buat → draft → preview → terbitkan → unduh PDF → bayar 
   expect(draftText).toContain("CV Bima Satria Jaya");
   await page.keyboard.press("Escape");
 
-  // Terbitkan (dengan konfirmasi)
-  await page.getByRole("button", { name: "Terbitkan" }).click();
-  await expect(page.getByRole("dialog", { name: /Terbitkan invoice/ })).toBeVisible();
-  await page.getByRole("button", { name: "Ya, terbitkan" }).click();
+  // Finance Manager menyetujui & menerbitkan draftnya sendiri (dengan konfirmasi)
+  await page.getByRole("button", { name: "Setujui & terbitkan" }).click();
+  await expect(page.getByRole("dialog", { name: /Setujui & terbitkan invoice/ })).toBeVisible();
+  await page.getByRole("button", { name: "Ya, setujui & terbitkan" }).click();
   const heading = page.getByRole("heading", { name: /^Invoice \d+$/ });
   await expect(heading).toBeVisible();
   const number = (await heading.textContent())!.replace("Invoice ", "").trim();
@@ -67,10 +74,11 @@ test("Finance: buat → draft → preview → terbitkan → unduh PDF → bayar 
   const pdf = await page.request.get(`/api/invoices/${id}/pdf?download=1`);
   expect(pdf.headers()["content-disposition"]).toContain(`Invoice_${number}_CV_Bima_Satria_Jaya.pdf`);
   const text = await pdfText(pdf, "issued");
-  for (const s of [`: ${number}`, "CV Bima Satria Jaya", "7 Pax", "Rp. 2.000.000,-", "Rp. 14.000.000,-", ": Empat Belas Juta Rupiah", "MANDIRI-IDR", ": 137-00-2072139-1", "Sincerely,", "(Elva Aditya Fawwaz, S.E.)"]) {
+  for (const s of [`: ${number}`, "CV Bima Satria Jaya", "7 Pax", "Rp. 2.000.000,-", "Rp. 14.000.000,-", ": Empat Belas Juta Rupiah", "MANDIRI-IDR", ": 137-00-2072139-1", "Sincerely,", "Finance Manager", "(Elva Aditya Fawwaz, S.E.)"]) {
     expect(text, s).toContain(s);
   }
   expect(text).not.toContain("DRAFT");
+  expect(pageSizeOf(await pdf.body(), "issued-size").landscape).toBe(true); // format landscape
 
   // Pembayaran sebagian 5 jt
   const pay = async (amount: string) => {
@@ -142,8 +150,8 @@ test("Finance: duplikasi membuat draft baru tanpa nomor/pembayaran; pembatalan m
   await expect(page.getByRole("heading", { name: "Draft invoice" })).toBeVisible();
   await expect(page.getByText(/^Disalin dari \d{5}$/)).toBeVisible();
   await expect(page.getByText("Belum ada pembayaran")).toHaveCount(0); // draft tidak menampilkan bagian pembayaran
-  await page.getByRole("button", { name: "Terbitkan" }).click();
-  await page.getByRole("button", { name: "Ya, terbitkan" }).click();
+  await page.getByRole("button", { name: "Setujui & terbitkan" }).click();
+  await page.getByRole("button", { name: "Ya, setujui & terbitkan" }).click();
   const newNumber = (await page.getByRole("heading", { name: /^Invoice \d+$/ }).textContent())!.replace("Invoice ", "");
   expect(Number(newNumber)).toBeGreaterThan(Number(srcNumber));
   await expect(page.getByText("Belum Dibayar")).toBeVisible();
@@ -188,4 +196,98 @@ test("Daftar invoice: pencarian, filter, urut, paginasi, dan ekspor CSV/Excel", 
 
   await page.goto("/invoices?paymentStatus=OVERDUE");
   await expect(page.locator("tbody tr").first()).toContainText(/Jatuh Tempo/);
+});
+
+test("Alur persetujuan: Staff mengajukan → Finance Manager meninjau lengkap, mengembalikan, lalu menyetujui → PDF resmi", async ({ browser }) => {
+  const staffCtx = await browser.newContext();
+  const finCtx = await browser.newContext();
+  const staff = await staffCtx.newPage();
+  const fin = await finCtx.newPage();
+  await login(staff, "staff");
+  await login(fin, "finance");
+
+  // 1) Staff menginput lengkap: Product Description dinamis (nama peserta) — Remark tetap mengikuti program
+  await fillDemiChefInvoice(staff, "3");
+  const desc = staff.getByLabel("Product Description (dinamis)");
+  await desc.fill("Biaya Diklat & Uji Kompetensi\nBidang Food Production\n(Skema Demi Chef)\nPeserta: Andi Saputra, Budi Santoso");
+  const remark = staff.getByLabel("Remark (tetap mengikuti program)");
+  await expect(remark).toHaveAttribute("placeholder", "Biaya Diklat & Uji Kompetensi Bidang Food Production (Skema Demi Chef)");
+  await expect(remark).toHaveValue("");
+  await expect(staff.getByLabel("Harga satuan baris 1")).toBeEnabled(); // staff menginput data lengkap
+  await expect(staff.getByLabel("Diskon baris 1")).toBeVisible();
+  await staff.getByRole("button", { name: "Simpan & ajukan verifikasi" }).click();
+  await expect(staff).toHaveURL(/\/invoices\/[0-9a-f-]{36}$/);
+  const id = staff.url().split("/").pop()!;
+  await expect(staff.getByRole("heading", { name: "Invoice menunggu verifikasi" })).toBeVisible();
+  await expect(staff.getByText("Menunggu Verifikasi", { exact: true }).first()).toBeVisible();
+  await expect(staff.getByText(/Menunggu verifikasi Finance Manager/)).toBeVisible();
+  await expect(staff.getByRole("button", { name: "Setujui & terbitkan" })).toHaveCount(0); // staff tidak dapat menyetujui
+  await expect(staff.getByRole("button", { name: "Tarik kembali" })).toBeVisible();
+  await expect(staff.getByRole("link", { name: "Edit draft" })).toHaveCount(0); // terkunci
+
+  // Dokumen yang diajukan: watermark DRAFT, tanpa nomor/tanda tangan
+  const pending = await staff.request.get(`/api/invoices/${id}/pdf`);
+  expect(pending.status()).toBe(200);
+  const pendingText = await pdfText(pending, "pending");
+  expect(pendingText).toContain("DRAFT");
+  expect(pendingText).toContain("Peserta: Andi Saputra, Budi Santoso");
+  expect(pendingText).toContain("( menunggu verifikasi )");
+  expect(pendingText).not.toContain("(Elva Aditya Fawwaz, S.E.)");
+  // Backend menolak penyuntingan & persetujuan oleh staff
+  expect((await staff.request.put(`/api/invoices/${id}`, { data: { customerId: id }, headers: ORIGIN })).status()).toBeGreaterThanOrEqual(400);
+  expect((await staff.request.post(`/api/invoices/${id}/issue`, { data: {}, headers: ORIGIN })).status()).toBe(403);
+  expect((await staff.request.post(`/api/invoices/${id}/reject`, { data: { reason: "bukan penyetuju" }, headers: ORIGIN })).status()).toBe(403);
+
+  // 2) Finance Manager melihat data lengkap & antrean di dashboard
+  await fin.goto("/dashboard");
+  await expect(fin.getByRole("link", { name: /Menunggu verifikasi/ })).toBeVisible(); // antrean verifikasi di dashboard
+  await fin.goto(`/invoices/${id}`);
+  await expect(fin.getByText(/Menunggu verifikasi Finance Manager/)).toBeVisible();
+  await expect(fin.getByText("CV Bima Satria Jaya").first()).toBeVisible();
+  await expect(fin.getByText("Peserta: Andi Saputra, Budi Santoso")).toBeVisible();
+  await expect(fin.getByText("Staff Demo").first()).toBeVisible(); // pengaju terlihat
+  await expect(fin.getByText("Rp 6.000.000").first()).toBeVisible();
+
+  // 3) Dikembalikan dengan alasan wajib
+  await fin.getByRole("button", { name: "Kembalikan ke staff" }).click();
+  await fin.getByRole("button", { name: "Kembalikan", exact: true }).click();
+  await expect(fin.getByRole("dialog").getByText(/alasan|Alasan/).first()).toBeVisible();
+  await fin.getByLabel("Alasan / catatan perbaikan").fill("Jumlah peserta belum sesuai surat tugas");
+  await fin.getByRole("button", { name: "Kembalikan", exact: true }).click();
+  await expect(fin.getByText("Dikembalikan oleh")).toBeVisible();
+  await expect(fin.getByRole("heading", { name: "Draft invoice" })).toBeVisible();
+
+  // 4) Staff melihat catatan, memperbaiki, dan mengajukan ulang
+  await staff.goto(`/invoices/${id}`);
+  await expect(staff.getByText("Jumlah peserta belum sesuai surat tugas")).toBeVisible();
+  await staff.getByRole("link", { name: "Edit draft" }).first().click();
+  await staff.getByLabel("Kuantitas baris 1").fill("2");
+  await staff.getByRole("button", { name: "Simpan & ajukan verifikasi" }).click();
+  await expect(staff.getByRole("heading", { name: "Invoice menunggu verifikasi" })).toBeVisible();
+
+  // 5) Finance Manager menyetujui → nomor, tanda tangan, dan PDF resmi
+  await fin.goto(`/invoices/${id}`);
+  await fin.getByRole("button", { name: "Setujui & terbitkan" }).first().click();
+  await fin.getByRole("button", { name: "Ya, setujui & terbitkan" }).click();
+  const heading = fin.getByRole("heading", { name: /^Invoice \d+$/ });
+  await expect(heading).toBeVisible();
+  const number = (await heading.textContent())!.replace("Invoice ", "").trim();
+  await expect(fin.getByText(/Disetujui & diterbitkan/).first()).toBeVisible();
+
+  const official = await fin.request.get(`/api/invoices/${id}/pdf?download=1`);
+  expect(official.status()).toBe(200);
+  const officialText = await pdfText(official, "official");
+  for (const s of [`: ${number}`, "4.000.000", "Finance Manager", "(Elva Aditya Fawwaz, S.E.)", "Peserta: Andi Saputra, Budi Santoso", "Remark : Biaya Diklat & Uji Kompetensi Bidang Food"]) {
+    expect(officialText, s).toContain(s);
+  }
+  expect(officialText).not.toContain("DRAFT");
+  expect(officialText).not.toContain("menunggu verifikasi");
+  expect(pageSizeOf(await official.body(), "official-size").landscape).toBe(true);
+
+  // 6) Staff tidak dapat melihat/mengunduh PDF resmi
+  expect((await staff.request.get(`/api/invoices/${id}/pdf`)).status()).toBe(403);
+  await staff.goto(`/invoices/${id}`);
+  await expect(staff.getByRole("button", { name: "Preview PDF" })).toHaveCount(0);
+  await staffCtx.close();
+  await finCtx.close();
 });

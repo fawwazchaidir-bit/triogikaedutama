@@ -78,7 +78,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: SP
         </FilterField>
         <FilterField label="Status invoice">
           <select name="status" defaultValue={f.status ?? ""} className={filterInput}>
-            <option value="">Semua</option><option value="ISSUED">Diterbitkan</option><option value="DRAFT">Draft</option><option value="CANCELLED">Dibatalkan</option>
+            <option value="">Semua</option><option value="ISSUED">Diterbitkan</option><option value="SUBMITTED">Menunggu verifikasi</option><option value="DRAFT">Draft</option><option value="CANCELLED">Dibatalkan</option>
           </select>
         </FilterField>
         <FilterField label="Status pembayaran">
@@ -101,12 +101,13 @@ export default async function DashboardPage({ searchParams }: { searchParams: SP
             <Tile label="Piutang belum dibayar" value={R(dash.outstandingAmount)} hint="Sisa tagihan invoice terbit pada periode ini" href={q({ status: "ISSUED" })} tone={dash.outstandingAmount > 0 ? "red" : undefined} />
           </section>
 
-          <section aria-label="Sebaran status" className="mb-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <section aria-label="Sebaran status" className="mb-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-7">
             <Tile label="Belum dibayar" value={String(dash.unpaidCount)} href={q({ paymentStatus: "UNPAID" })} />
             <Tile label="Dibayar sebagian" value={String(dash.partialCount)} href={q({ paymentStatus: "PARTIALLY_PAID" })} />
             <Tile label="Lunas" value={String(dash.paidCount)} href={q({ paymentStatus: "PAID" })} />
             <Tile label="Jatuh tempo" value={String(dash.overdueCount)} hint={dash.overdueCount ? `${R(dash.overdueAmount)} belum dibayar` : undefined} href={q({ paymentStatus: "OVERDUE" })} tone={dash.overdueCount ? "red" : undefined} />
             <Tile label="Dibatalkan" value={String(dash.cancelledCount)} href={q({ status: "CANCELLED" })} />
+            <Tile label="Menunggu verifikasi" value={String(dash.pendingCount)} hint={dash.pendingCount ? "Perlu persetujuan Finance Manager" : undefined} href={q({ status: "SUBMITTED" })} tone={dash.pendingCount ? "red" : undefined} />
             <Tile label="Draft" value={String(dash.draftCount)} href={q({ status: "DRAFT" })} />
           </section>
 
@@ -124,7 +125,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: SP
             <details>
               <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-ink-soft">Definisi angka (agar tidak terjadi hitung ganda)</summary>
               <dl className="grid gap-3 px-5 pb-5 text-sm text-ink-soft sm:grid-cols-3">
-                <div><dt className="font-semibold text-ink">Nilai invoice</dt><dd>Total invoice berstatus <em>Diterbitkan</em>. Draft dan invoice batal tidak dihitung. DP/pembayaran <strong>tidak</strong> mengurangi nilai ini.</dd></div>
+                <div><dt className="font-semibold text-ink">Nilai invoice</dt><dd>Total invoice berstatus <em>Diterbitkan</em>. Draft, invoice menunggu verifikasi, dan invoice batal tidak dihitung. DP/pembayaran <strong>tidak</strong> mengurangi nilai ini.</dd></div>
                 <div><dt className="font-semibold text-ink">Penerimaan kas</dt><dd>Jumlah baris pembayaran (termasuk DP, dikurangi pembalikan) menurut tanggal bayar. Satu rupiah hanya dihitung sekali.</dd></div>
                 <div><dt className="font-semibold text-ink">Piutang</dt><dd>Nilai invoice terbit dikurangi pembayaran yang tercatat. Invoice lunas bernilai 0 namun tetap ada di histori.</dd></div>
               </dl>

@@ -19,12 +19,13 @@ export function Badge({ tone = "gray", children, className }: { tone?: Tone; chi
   );
 }
 
-export type InvoiceStatus = "DRAFT" | "ISSUED" | "CANCELLED";
+export type InvoiceStatus = "DRAFT" | "SUBMITTED" | "ISSUED" | "CANCELLED";
 export type PaymentStatusValue = "UNPAID" | "PARTIALLY_PAID" | "PAID";
 
 export function InvoiceStatusBadge({ status }: { status: InvoiceStatus }) {
   const map: Record<InvoiceStatus, [Tone, string]> = {
     DRAFT: ["gray", "Draft"],
+    SUBMITTED: ["amber", "Menunggu Verifikasi"],
     ISSUED: ["blue", "Diterbitkan"],
     CANCELLED: ["dark", "Dibatalkan"],
   };

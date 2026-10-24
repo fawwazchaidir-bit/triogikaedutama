@@ -3,11 +3,14 @@ import { Document, Font, Image, Page, StyleSheet, Text, View } from "@react-pdf/
 
 
 /**
- * Template PDF invoice — A4 portrait. Meniru invoice referensi Trilogika (Word):
- *   header (logo + identitas | INVOICE + nomor/tanggal/term/jatuh tempo) → Customer → tabel bergaris putus-putus →
- *   Inword/Remark/Transfer Via | ringkasan biaya → Sincerely / Finance / penandatangan.
+ * Template PDF invoice — A4 LANDSCAPE. Turunan invoice referensi Trilogika (Word):
+ *   header (logo + identitas | judul INVOICE di tengah | nomor/tanggal/term/jatuh tempo mepet kanan) → Customer →
+ *   tabel bergaris putus-putus → [Inword/Remark/Transfer Via | Sincerely + penandatangan | ringkasan biaya].
  *
- * Komponen ini MURNI presentasi: seluruh teks & nominal sudah diformat di `document-data.ts` dari SNAPSHOT tersimpan.
+ * Nomor, cap, dan tanda tangan HANYA ada pada dokumen yang sudah diverifikasi (`approved`). Dokumen draft/menunggu
+ * verifikasi diberi watermark besar "DRAFT" di atas isi, tanpa nomor, cap, dan tanda tangan.
+ *
+ * Komponen ini MURNI presentasi: seluruh teks & nominal sudah diformat di `document-data.ts` dari data tersimpan.
  * Font Times (bawaan PDF, tidak perlu di-embed) = padanan Times New Roman pada dokumen referensi.
  */
 
@@ -17,6 +20,10 @@ export interface PdfImage { data: Buffer; format: "png" | "jpg" }
 
 export interface InvoicePdfData {
   watermark: "DRAFT" | "DIBATALKAN" | null;
+  /** true = sudah diverifikasi/diterbitkan → nomor, tanda tangan, dan cap boleh tampil. */
+  approved: boolean;
+  /** Peringatan singkat di kaki halaman (draft / dibatalkan). */
+  disclaimer: string | null;
   company: {
     name: string; tagline: string | null; addressLines: string[]; phone: string | null; email: string | null; npwp: string | null;
     signerName: string; signerTitle: string; closingText: string; paymentNote: string | null; footerNote: string | null;
@@ -36,16 +43,16 @@ export interface InvoicePdfData {
 Font.registerHyphenationCallback((word) => [word]);
 
 const INK = "#000000";
-const DASH = { borderStyle: "dashed" as const, borderColor: INK, borderWidth: 0 };
 
 const s = StyleSheet.create({
-  page: { paddingTop: 36, paddingBottom: 54, paddingHorizontal: 40, fontFamily: "Times-Roman", fontSize: 10.5, color: INK },
+  page: { paddingTop: 30, paddingBottom: 52, paddingHorizontal: 40, fontFamily: "Times-Roman", fontSize: 10.5, color: INK },
   // lineHeight sengaja BUKAN di Page: pada react-pdf, lineHeight tingkat-halaman membuat teks `render` (nomor halaman) berukuran nol.
   content: { lineHeight: "13pt" },
   bold: { fontFamily: "Times-Bold" },
 
-  header: { flexDirection: "row", justifyContent: "space-between" },
-  brand: { flexDirection: "row", width: "58%" },
+  // Tiga kolom simetris (300 | fleksibel | 300) → judul tepat di tengah halaman, blok nomor menempel di tepi kanan.
+  header: { flexDirection: "row" },
+  brand: { flexDirection: "row", width: 300 },
   logo: { width: 62, height: 62, marginRight: 10 },
   brandText: { flex: 1 },
   companyName: { fontFamily: "Times-Bold", fontSize: 11.5 },
@@ -53,61 +60,82 @@ const s = StyleSheet.create({
   kv: { flexDirection: "row" },
   kvLabel: { width: 36 },
 
-  right: { width: "40%" },
-  title: { fontFamily: "Times-Bold", fontSize: 18, textAlign: "right", marginBottom: 8, letterSpacing: 0.5 },
-  statusTag: { fontFamily: "Times-Bold", fontSize: 11, textAlign: "right", marginTop: -4, marginBottom: 6 },
-  metaRow: { flexDirection: "row", marginBottom: 2 },
-  metaLabel: { width: 76 },
-  metaValue: { flex: 1 },
+  titleWrap: { flex: 1, alignItems: "center", paddingTop: 2 },
+  title: { fontFamily: "Times-Bold", fontSize: 24, lineHeight: "28pt", textAlign: "center", letterSpacing: 2 },
+  statusTag: { fontFamily: "Times-Bold", fontSize: 11, textAlign: "center", marginTop: 2 },
 
-  customer: { flexDirection: "row", marginTop: 16, marginBottom: 6 },
+  // Blok nomor/tanggal: kotak sempit yang menempel di tepi kanan; nilai rata kanan sehingga sejajar dengan kolom "Nett Amount".
+  metaWrap: { width: 300, alignItems: "flex-end" },
+  metaBox: { width: 190 },
+  metaLabel: { width: 76 },
+  metaColon: { width: 8 },
+  metaValue: { flex: 1, textAlign: "right" },
+
+  customer: { flexDirection: "row", marginTop: 14, marginBottom: 6 },
   customerLabel: { width: 62 },
 
-  ruleTop: { ...DASH, borderTopWidth: 1.6 },
-  ruleBottom: { ...DASH, borderBottomWidth: 1.6 },
   tableHead: { flexDirection: "row", paddingVertical: 5, borderTopWidth: 1.6, borderBottomWidth: 1.6, borderStyle: "dashed", borderColor: INK },
-  cNo: { width: 30 },
-  cDesc: { flex: 1, paddingRight: 8 },
-  cQty: { width: 70 },
-  cPrice: { width: 92, textAlign: "right" },
-  cNet: { width: 98, textAlign: "right" },
+  cNo: { width: 34 },
+  cDesc: { flex: 1, paddingRight: 10 },
+  cQty: { width: 90 },
+  cPrice: { width: 118, textAlign: "right" },
+  cNet: { width: 130, textAlign: "right" },
   row: { flexDirection: "row", paddingTop: 5 },
   rowNote: { fontFamily: "Times-Italic", fontSize: 9.5 },
 
   bottom: { flexDirection: "row", borderTopWidth: 1.6, borderStyle: "dashed", borderColor: INK, paddingTop: 5 },
-  bottomLeft: { flex: 1, paddingRight: 14 },
-  bottomRight: { width: 224 },
+  bottomLeft: { width: 292, paddingRight: 14 },
+  bottomMid: { flex: 1, alignItems: "center" },
+  bottomRight: { width: 236 },
   lr: { flexDirection: "row", marginBottom: 2 },
   lrLabel: { width: 50 },
-  transfer: { marginTop: 10 },
+  transfer: { marginTop: 8 },
   underline: { textDecoration: "underline", fontFamily: "Times-Bold" },
   sumRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 1.5 },
   sumRule: { borderBottomWidth: 1.6, borderStyle: "dashed", borderColor: INK, marginBottom: 3, paddingBottom: 3 },
 
-  closing: { marginTop: 16, alignItems: "center", height: 118 },
-  stamp: { position: "absolute", top: 24, left: "50%", marginLeft: -62, width: 86, height: 86, opacity: 0.85 },
-  signature: { position: "absolute", top: 24, left: "50%", marginLeft: -6, width: 64, height: 62 },
+  closing: { width: 190, alignItems: "center", height: 116, marginTop: 2 },
+  stamp: { position: "absolute", top: 28, left: "50%", marginLeft: -62, width: 82, height: 82, opacity: 0.85 },
+  signature: { position: "absolute", top: 28, left: "50%", marginLeft: -6, width: 64, height: 62 },
   signer: { position: "absolute", bottom: 0 },
+  pending: { position: "absolute", bottom: 0, fontFamily: "Times-Italic", fontSize: 9.5, color: "#555555" },
 
+  // Watermark digambar PALING AKHIR (di atas isi) agar tidak dapat tertutup elemen lain.
   watermark: {
-    position: "absolute", top: 320, left: 0, right: 0, textAlign: "center", fontFamily: "Times-Bold", fontSize: 96,
-    transform: "rotate(-30deg)", opacity: 0.12, letterSpacing: 6,
+    position: "absolute", top: 205, left: 0, right: 0, textAlign: "center", fontFamily: "Times-Bold",
+    transform: "rotate(-24deg)", opacity: 0.14, letterSpacing: 8,
   },
-  footerNote: { position: "absolute", left: 40, right: 140, bottom: 24, fontSize: 8.5, color: "#444444" },
-  pageNo: { position: "absolute", right: 40, bottom: 24, width: 140, fontSize: 8.5, color: "#444444", textAlign: "right" },
+  footer: { position: "absolute", left: 40, right: 150, bottom: 22, fontSize: 8.5, color: "#444444" },
+  disclaimer: { fontFamily: "Times-Bold", fontSize: 8.5 },
+  pageNo: { position: "absolute", right: 40, bottom: 22, width: 140, fontSize: 8.5, color: "#444444", textAlign: "right" },
 });
 
 /** Perkiraan tinggi blok total + penutup (pt) — ambang `minPresenceAhead` untuk baris terakhir. */
-const TOTAL_BLOCK_HEIGHT = 300;
-const MIN_BODY_HEIGHT = 150;
+const TOTAL_BLOCK_HEIGHT = 190;
+const MIN_BODY_HEIGHT = 56;
+/** Perkiraan jumlah karakter per baris pada kolom deskripsi (landscape). */
+const CHARS_PER_LINE = 78;
+/** Baris setinggi lebih dari ini boleh terbelah antar halaman (deskripsi dinamis dengan banyak nama peserta). */
+const MAX_UNBREAKABLE_LINES = 16;
+
+const textLinesOf = (l: InvoicePdfData["lines"][number]) =>
+  l.descriptionLines.reduce((n, d) => n + Math.max(1, Math.ceil(d.length / CHARS_PER_LINE)), 0) + (l.note ? 1 : 0);
 
 /** Perkiraan tinggi baris untuk menghitung spacer (hanya kosmetik; kesalahan kecil tidak berdampak). */
 function spacerHeight(lines: InvoicePdfData["lines"]): number {
-  const used = lines.reduce((sum, l) => {
-    const textLines = l.descriptionLines.reduce((n, d) => n + Math.max(1, Math.ceil(d.length / 44)), 0) + (l.note ? 1 : 0);
-    return sum + textLines * 13.2 + 5;
-  }, 0);
+  const used = lines.reduce((sum, l) => sum + textLinesOf(l) * 13.2 + 5, 0);
   return Math.max(0, MIN_BODY_HEIGHT - used);
+}
+
+/** Satu baris meta (label | ":" | nilai rata kanan). */
+function MetaRow({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
+  return (
+    <View style={s.kv}>
+      <Text style={[s.metaLabel, bold ? s.bold : {}]}>{label}</Text>
+      <Text style={[s.metaColon, bold ? s.bold : {}]}>:</Text>
+      <Text style={[s.metaValue, bold ? s.bold : {}]}>{value}</Text>
+    </View>
+  );
 }
 
 function Pair({ label, value, labelStyle, bold }: { label: string; value: string; labelStyle: Style; bold?: boolean }) {
@@ -121,13 +149,12 @@ function Pair({ label, value, labelStyle, bold }: { label: string; value: string
 
 export function InvoicePdf({ data }: { data: InvoicePdfData }) {
   const c = data.company;
+  const wmColor = data.watermark === "DIBATALKAN" ? "#B3161F" : "#555555";
   return (
     <Document title={`Invoice ${data.meta.number}`} author={c.name} subject={`Invoice ${data.meta.number} — ${data.customerName}`} creator="Trilogika Invoice System" producer="Trilogika Invoice System">
-      <Page size="A4" style={s.page}>
-        {data.watermark && <Text fixed style={[s.watermark, { color: data.watermark === "DIBATALKAN" ? "#B3161F" : "#555555" }]}>{data.watermark}</Text>}
-
+      <Page size="A4" orientation="landscape" style={s.page}>
         <View style={s.content}>
-        {/* ── Header ── */}
+        {/* ── Header: identitas | INVOICE (tengah) | nomor & tanggal (mepet kanan) ── */}
         <View style={s.header}>
           <View style={s.brand}>
             {c.logo && <Image src={{ data: c.logo.data, format: c.logo.format }} style={s.logo} />}
@@ -140,15 +167,19 @@ export function InvoicePdf({ data }: { data: InvoicePdfData }) {
               {c.npwp && <Pair label="NPWP" value={c.npwp} labelStyle={s.kvLabel} />}
             </View>
           </View>
-          <View style={s.right}>
+          <View style={s.titleWrap}>
             <Text style={s.title}>INVOICE</Text>
             {data.watermark && (
               <Text style={[s.statusTag, { color: data.watermark === "DIBATALKAN" ? "#B3161F" : "#444444" }]}>** {data.watermark} **</Text>
             )}
-            <Pair label="Number" value={data.meta.number} labelStyle={s.metaLabel} bold />
-            <Pair label="Inv. Date" value={data.meta.invoiceDate} labelStyle={s.metaLabel} />
-            <Pair label="Payment Term" value={data.meta.paymentTerm} labelStyle={s.metaLabel} />
-            <Pair label="Due Date" value={data.meta.dueDate} labelStyle={s.metaLabel} />
+          </View>
+          <View style={s.metaWrap}>
+            <View style={s.metaBox}>
+              <MetaRow label="Number" value={data.meta.number} bold />
+              <MetaRow label="Inv. Date" value={data.meta.invoiceDate} />
+              <MetaRow label="Payment Term" value={data.meta.paymentTerm} />
+              <MetaRow label="Due Date" value={data.meta.dueDate} />
+            </View>
           </View>
         </View>
 
@@ -171,7 +202,8 @@ export function InvoicePdf({ data }: { data: InvoicePdfData }) {
             <View
               key={l.no}
               style={s.row}
-              wrap={false}
+              // Baris pendek tidak dipecah antar halaman; deskripsi sangat panjang (daftar peserta) boleh mengalir.
+              wrap={textLinesOf(l) > MAX_UNBREAKABLE_LINES}
               // Baris terakhir ikut pindah bersama blok total bila ruang tersisa terlalu sempit
               // (total tidak boleh terpisah dari konteks barisnya).
               minPresenceAhead={idx === data.lines.length - 1 ? TOTAL_BLOCK_HEIGHT : 0}
@@ -190,7 +222,7 @@ export function InvoicePdf({ data }: { data: InvoicePdfData }) {
           {/* Spacer: menjaga siluet dokumen (blok total berada di posisi serupa invoice referensi) untuk invoice pendek. */}
           <View style={{ height: spacerHeight(data.lines) }} />
 
-          {/* ── Inword / Remark / Transfer | Ringkasan (satu blok, tidak dipecah antar halaman) ── */}
+          {/* ── Inword/Remark/Transfer | Penutup & tanda tangan | Ringkasan (satu blok, tidak dipecah antar halaman) ── */}
           <View wrap={false}>
             <View style={s.bottom}>
               <View style={s.bottomLeft}>
@@ -206,6 +238,20 @@ export function InvoicePdf({ data }: { data: InvoicePdfData }) {
                 )}
                 {c.paymentNote && <Text style={{ marginTop: 8, fontSize: 9.5 }}>{c.paymentNote}</Text>}
               </View>
+
+              <View style={s.bottomMid}>
+                <View style={s.closing}>
+                  {/* Cap & tanda tangan hanya ada bila sudah diverifikasi; digambar LEBIH DULU agar teks tetap terbaca di atasnya. */}
+                  {data.approved && c.stamp && <Image src={{ data: c.stamp.data, format: c.stamp.format }} style={s.stamp} />}
+                  {data.approved && c.signature && <Image src={{ data: c.signature.data, format: c.signature.format }} style={s.signature} />}
+                  <Text>{c.closingText}</Text>
+                  <Text>{c.signerTitle}</Text>
+                  {data.approved
+                    ? <Text style={s.signer}>({c.signerName})</Text>
+                    : <Text style={s.pending}>( menunggu verifikasi )</Text>}
+                </View>
+              </View>
+
               <View style={s.bottomRight}>
                 {data.summary.map((r, i) => (
                   <View key={i} style={r.rule ? [s.sumRow, s.sumRule] : s.sumRow}>
@@ -215,24 +261,23 @@ export function InvoicePdf({ data }: { data: InvoicePdfData }) {
                 ))}
               </View>
             </View>
-
-            {/* ── Penutup ── */}
-            <View style={s.closing}>
-              {/* Cap & tanda tangan digambar LEBIH DULU agar teks tetap terbaca di atasnya. */}
-              {c.stamp && <Image src={{ data: c.stamp.data, format: c.stamp.format }} style={s.stamp} />}
-              {c.signature && <Image src={{ data: c.signature.data, format: c.signature.format }} style={s.signature} />}
-              <Text>{c.closingText}</Text>
-              <Text>{c.signerTitle}</Text>
-              <Text style={s.signer}>({c.signerName})</Text>
-            </View>
           </View>
         </View>
 
         </View>
 
-        {c.footerNote && <Text fixed style={s.footerNote}>{c.footerNote}</Text>}
+        {(data.disclaimer || c.footerNote) && (
+          <View fixed style={s.footer}>
+            {data.disclaimer && <Text style={s.disclaimer}>{data.disclaimer}</Text>}
+            {c.footerNote && <Text>{c.footerNote}</Text>}
+          </View>
+        )}
         {/* Selalu non-kosong: react-pdf mengukur kotak teks pada pass pertama (totalPages belum final). */}
         <Text fixed style={s.pageNo} render={({ pageNumber, totalPages }) => `Halaman ${pageNumber} / ${totalPages}`} />
+
+        {data.watermark && (
+          <Text fixed style={[s.watermark, { color: wmColor, fontSize: data.watermark === "DIBATALKAN" ? 92 : 150 }]}>{data.watermark}</Text>
+        )}
       </Page>
     </Document>
   );

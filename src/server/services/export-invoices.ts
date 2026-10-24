@@ -8,7 +8,7 @@ import { exportFilename, toCsv, toXlsx, type ReportTable } from "../export";
 import { listInvoicesForExport, type InvoiceListQuery } from "./invoices";
 import { formatDateLong, todayIso } from "@/lib/format";
 
-const STATUS_LABEL = { DRAFT: "Draft", ISSUED: "Diterbitkan", CANCELLED: "Dibatalkan" } as const;
+const STATUS_LABEL = { DRAFT: "Draft", SUBMITTED: "Menunggu Verifikasi", ISSUED: "Diterbitkan", CANCELLED: "Dibatalkan" } as const;
 const PAY_LABEL = { UNPAID: "Belum Dibayar", PARTIALLY_PAID: "Dibayar Sebagian", PAID: "Lunas" } as const;
 
 export async function exportInvoiceList(actor: Actor, filters: InvoiceListQuery, format: "csv" | "xlsx") {

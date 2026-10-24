@@ -8,7 +8,7 @@ export const invoiceListQuerySchema = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
   customerId: z.string().uuid().optional(),
-  status: z.enum(["DRAFT", "ISSUED", "CANCELLED"]).optional(),
+  status: z.enum(["DRAFT", "SUBMITTED", "ISSUED", "CANCELLED"]).optional(),
   paymentStatus: z.enum(["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE"]).optional(),
   createdById: z.string().uuid().optional(),
   sort: z.enum(["date", "total", "due", "number"]).optional(),

@@ -16,8 +16,10 @@ import type { InvoiceTaxGroupDto } from "@/lib/types";
 
 /**
  * Menyusun data dokumen PDF dari invoice TERSIMPAN.
- *  • ISSUED / CANCELLED → HANYA dari snapshot beku (perubahan master/pengaturan tidak berpengaruh).
- *  • DRAFT              → dari data tersimpan + master saat ini, diberi watermark DRAFT (tanpa cap/tanda tangan).
+ *  • ISSUED / CANCELLED → HANYA dari snapshot beku (perubahan master/pengaturan tidak berpengaruh); nomor, tanda tangan
+ *                         Finance Manager, dan cap muncul.
+ *  • DRAFT / SUBMITTED  → dari data tersimpan + master saat ini, diberi watermark DRAFT. TANPA nomor, tanda tangan, dan cap
+ *                         sampai diverifikasi (dicegah di sini, di sumber data — bukan sekadar disembunyikan di template).
  * Tidak pernah memakai nilai dari input browser yang belum disimpan.
  */
 
@@ -35,7 +37,7 @@ const safeCustomer = (name: string) => name.normalize("NFKD").replace(/[^A-Za-z0
 export interface InvoiceDocument {
   data: InvoicePdfData;
   filename: string;
-  status: "DRAFT" | "ISSUED" | "CANCELLED";
+  status: "DRAFT" | "SUBMITTED" | "ISSUED" | "CANCELLED";
   number: string | null;
   invoiceId: string;
 }
@@ -48,7 +50,8 @@ export async function loadInvoiceDocument(actor: Actor, id: string): Promise<Inv
     include: { items: { orderBy: { lineNo: "asc" } }, customer: true, bankAccount: true },
   });
   if (!inv) throw Errors.notFound("Invoice");
-  const isDraft = inv.status === "DRAFT";
+  // DRAFT & SUBMITTED (menunggu verifikasi) diperlakukan sama: belum resmi.
+  const isDraft = inv.status === "DRAFT" || inv.status === "SUBMITTED";
   assertCan(actor, isDraft ? "invoice:preview_draft" : "invoice:pdf");
 
   // ── Sumber data: snapshot (terbit/batal) atau master saat ini (draft) ──
@@ -61,7 +64,7 @@ export async function loadInvoiceDocument(actor: Actor, id: string): Promise<Inv
     company = {
       schemaVersion: 1, name: st.name, tagline: st.tagline, address: st.address, phone: st.phone, email: st.email, website: st.website,
       npwp: st.npwp, signerName: st.signerName, signerTitle: st.signerTitle, closingText: st.closingText,
-      logoFileId: st.showLogo ? st.logoFileId : null, stampFileId: null, signatureFileId: null, // draft: tanpa cap & tanda tangan
+      logoFileId: st.showLogo ? st.logoFileId : null, stampFileId: null, signatureFileId: null, // belum diverifikasi: tanpa cap & tanda tangan
       paymentNote: st.paymentNote, footerNote: st.footerNote,
     };
     display = { rupiahStyle: st.rupiahStyle, terbilangSource: st.terbilangSource };
@@ -81,6 +84,7 @@ export async function loadInvoiceDocument(actor: Actor, id: string): Promise<Inv
   const total = Number(inv.totalAmount);
   const dp = Number(inv.downPaymentAmount);
   const descriptions = inv.items.map((i) => i.description);
+  const programTexts = inv.items.map((i) => i.programText);
   const taxGroups = ((inv.taxSnapshot as { groups?: InvoiceTaxGroupDto[] } | null)?.groups ?? []);
   const includedTax = taxGroups.filter((g) => !g.addedToTotal).reduce((a, g) => a + g.taxAmount, 0);
 
@@ -110,7 +114,11 @@ export async function loadInvoiceDocument(actor: Actor, id: string): Promise<Inv
   const [logo, stamp, signature] = await Promise.all([image(company.logoFileId), image(company.stampFileId), image(company.signatureFileId)]);
 
   const data: InvoicePdfData = {
-    watermark: inv.status === "DRAFT" ? "DRAFT" : inv.status === "CANCELLED" ? "DIBATALKAN" : null,
+    watermark: isDraft ? "DRAFT" : inv.status === "CANCELLED" ? "DIBATALKAN" : null,
+    approved: !isDraft,
+    disclaimer: isDraft
+      ? "DRAFT — belum diverifikasi Finance Manager. Bukan invoice resmi; jangan dikirim atau ditagihkan kepada pelanggan."
+      : inv.status === "CANCELLED" ? "Invoice ini telah DIBATALKAN dan tidak berlaku sebagai tagihan." : null,
     company: {
       name: company.name, tagline: company.tagline,
       addressLines: company.address.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
@@ -122,7 +130,8 @@ export async function loadInvoiceDocument(actor: Actor, id: string): Promise<Inv
     customerName,
     lines,
     inword: terbilang(inwordAmount),
-    remark: resolveRemark(inv.remark, descriptions),
+    // Remark = teks PROGRAM tetap (bukan Product Description yang dinamis / berisi nama peserta).
+    remark: resolveRemark(inv.remark, programTexts, descriptions),
     bank,
     summary,
   };

@@ -116,8 +116,8 @@ Pasang reverse proxy HTTPS (konfigurasi Nginx di atas) di depan `127.0.0.1:3000`
 4. **Pengaturan → Pajak**: tambahkan konfigurasi pajak **sesuai ketentuan lembaga** (kosong = semua bebas pajak).
 5. **Pengaturan → Penomoran invoice**: konfirmasi nomor berikutnya (**periksa dulu apakah 00434/00435 sudah terpakai**).
 6. **Produk & Layanan**: lengkapi katalog. **Pelanggan**: tambahkan pelanggan aktif.
-7. **Pengaturan → Pengguna**: buat akun Finance & Staff (password sementara, wajib diganti).
-8. Terbitkan satu invoice uji → unduh PDF → bandingkan dengan dokumen Word → batalkan (alasan: uji) bila tidak dipakai.
+7. **Pengaturan → Pengguna**: buat akun **Finance Manager** (penyetuju) & **Staff Operasional** (penginput) — password sementara, wajib diganti. Periksa **Pengaturan → Perusahaan & dokumen → Jabatan penandatangan = "Finance Manager"** dan unggah tanda tangan & cap (hanya tercetak pada invoice yang sudah disetujui).
+8. Uji alur penuh: login Staff → buat & **ajukan** invoice uji → login Finance Manager → **setujui & terbitkan** → unduh PDF (landscape) → bandingkan dengan dokumen Word → batalkan (alasan: uji) bila tidak dipakai. Pastikan PDF sebelum disetujui berwatermark DRAFT.
 9. Jadwalkan backup & rekonsiliasi (bagian 5) dan **lakukan satu kali latihan pemulihan**.
 
 ## 5. Backup & pemulihan

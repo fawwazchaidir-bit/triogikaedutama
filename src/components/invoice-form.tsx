@@ -16,6 +16,7 @@ import { computeDueDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
 import { terbilang } from "@/lib/finance/terbilang";
 import { resolveRemark } from "@/lib/finance/remark";
+import { flattenDescription } from "@/lib/finance/description-template";
 import { formatDateShort } from "@/lib/format";
 import type { BankAccountDto, CustomerDto, InvoiceDto, ProductDto, TaxConfigDto } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -25,6 +26,8 @@ interface LineState {
   productId: string | null;
   productLabel: string;
   description: string;
+  /** Teks program tetap dari master produk (dasar Remark); null untuk baris bebas. */
+  programText: string | null;
   quantity: string;
   unit: string;
   unitPrice: number | null;
@@ -37,13 +40,13 @@ export interface InvoiceFormProps {
   invoice?: InvoiceDto;
   defaults: { paymentMethod: string; paymentTermDays: number; dueDateBasis: "CALENDAR_DAYS" | "BUSINESS_DAYS"; today: string; banks: BankAccountDto[] };
   taxes: TaxConfigDto[];
-  perms: { override: boolean; discount: boolean; createCustomer: boolean };
+  perms: { override: boolean; discount: boolean; createCustomer: boolean; submit: boolean };
 }
 
 const PAYMENT_METHODS = ["Transfer", "Tunai", "QRIS", "Virtual Account", "Cek/Giro"];
 let seq = 0;
 const newKey = () => `l${++seq}`;
-const emptyLine = (): LineState => ({ key: newKey(), productId: null, productLabel: "", description: "", quantity: "1", unit: "Pax", unitPrice: null, discount: null, taxConfigId: null });
+const emptyLine = (): LineState => ({ key: newKey(), productId: null, productLabel: "", description: "", programText: null, quantity: "1", unit: "Pax", unitPrice: null, discount: null, taxConfigId: null });
 const toRule = (t: TaxConfigDto): TaxRule => ({ key: t.id, code: t.code, name: t.name, rateBps: t.rateBps, dppNumerator: t.dppNumerator, dppDenominator: t.dppDenominator, method: t.method });
 
 export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFormProps) {
@@ -62,7 +65,7 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
   const [lines, setLines] = useState<LineState[]>(
     invoice?.lines.length
       ? invoice.lines.map((l) => ({
-          key: newKey(), productId: l.productId, productLabel: l.productCode ?? "", description: l.description, quantity: l.quantity,
+          key: newKey(), productId: l.productId, productLabel: l.productCode ?? "", description: l.description, programText: l.programText, quantity: l.quantity,
           unit: l.unit, unitPrice: l.unitPrice, discount: l.discountAmount || null, taxConfigId: l.taxConfigId,
         }))
       : [emptyLine()],
@@ -72,7 +75,7 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
   const [admin, setAdmin] = useState<number | null>(invoice?.amounts.admin || null);
   const [downPayment, setDownPayment] = useState<number | null>(invoice?.amounts.downPayment || null);
 
-  const [saving, setSaving] = useState<null | "save" | "preview">(null);
+  const [saving, setSaving] = useState<null | "save" | "preview" | "submit">(null);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
@@ -108,14 +111,15 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
     try { return termNum !== null && invoiceDate ? computeDueDate(invoiceDate, termNum, basis) : null; } catch { return null; }
   }, [invoiceDate, termNum, basis]);
 
-  const autoRemark = resolveRemark(null, lines.filter((l) => l.description.trim()).map((l) => l.description));
+  // Pratinjau Remark: teks PROGRAM tetap (bukan isian deskripsi yang bisa memuat nama peserta).
+  const autoRemark = resolveRemark(null, lines.map((l) => l.programText), lines.filter((l) => l.description.trim()).map((l) => l.description));
 
   // ── Handlers baris ──
   const patchLine = (key: string, patch: Partial<LineState>) => { setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l))); setDirty(true); };
   const moveLine = (i: number, d: -1 | 1) => setLines((ls) => { const j = i + d; if (j < 0 || j >= ls.length) return ls; const c = [...ls]; [c[i], c[j]] = [c[j]!, c[i]!]; setDirty(true); return c; });
   const removeLine = (key: string) => setLines((ls) => (ls.length > 1 ? ls.filter((l) => l.key !== key) : ls));
   const applyProduct = (key: string, p: ProductDto) =>
-    patchLine(key, { productId: p.id, productLabel: p.code, description: p.description, unit: p.unit, unitPrice: p.defaultPrice, taxConfigId: p.taxConfigId && taxById.has(p.taxConfigId) ? p.taxConfigId : null });
+    patchLine(key, { productId: p.id, productLabel: p.code, description: p.description, programText: flattenDescription(p.description), unit: p.unit, unitPrice: p.defaultPrice, taxConfigId: p.taxConfigId && taxById.has(p.taxConfigId) ? p.taxConfigId : null });
 
   const buildPayload = () => ({
     customerId: customer?.id ?? "",
@@ -129,19 +133,29 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
     ...(mode === "edit" && invoice ? { expectedVersion: invoice.version } : {}),
   });
 
-  async function save(after: "stay" | "preview") {
+  async function save(after: "stay" | "preview" | "submit") {
     setError(null); setFieldErrors({});
     if (!customer) { setFieldErrors({ customerId: "Pilih pelanggan dari daftar" }); setError("Pilih pelanggan terlebih dahulu."); return; }
     if (termNum === null) { setFieldErrors({ paymentTermDays: "Isi jumlah hari (angka bulat)" }); setError("Jangka waktu pembayaran harus berupa angka hari."); return; }
     if (calcError) { setError(calcError); return; }
     if (!calc) { setError("Tambahkan minimal satu baris produk/layanan."); return; }
-    setSaving(after === "preview" ? "preview" : "save");
+    setSaving(after === "preview" ? "preview" : after === "submit" ? "submit" : "save");
     try {
       const saved = mode === "create"
         ? await api<InvoiceDto>("/api/invoices", { body: buildPayload() })
         : await api<InvoiceDto>(`/api/invoices/${invoice!.id}`, { method: "PUT", body: buildPayload() });
       setDirty(false);
-      toast.success("Draft tersimpan.");
+      if (after === "submit") {
+        try {
+          await api(`/api/invoices/${saved.id}/submit`, { method: "POST", body: {} });
+          toast.success("Invoice tersimpan dan diajukan untuk verifikasi.");
+        } catch (e) {
+          // Draft sudah tersimpan; pengajuan gagal (mis. pajak nonaktif) → tampilkan di halaman detail.
+          toast.error(`Draft tersimpan, tetapi belum dapat diajukan: ${errorMessage(e)}`);
+        }
+      } else {
+        toast.success("Draft tersimpan.");
+      }
       router.push(`/invoices/${saved.id}${after === "preview" ? "?preview=1" : ""}`);
       router.refresh();
     } catch (e) {
@@ -160,7 +174,7 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
         {error && <Notice tone="danger">{error}</Notice>}
 
         <Card>
-          <CardHeader title="Informasi utama" description="Nomor invoice dialokasikan otomatis oleh sistem saat diterbitkan." />
+          <CardHeader title="Informasi utama" description="Nomor invoice dialokasikan otomatis setelah disetujui Finance Manager." />
           <div className="grid gap-4 p-5 sm:grid-cols-2">
             <Field label="Pelanggan" required error={fieldErrors.customerId} className="sm:col-span-2" htmlFor="cust">
               <Combobox<CustomerDto>
@@ -216,7 +230,7 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
                     <Field label="Produk / layanan" className="md:col-span-5" htmlFor={`prod-${l.key}`} error={lineErr(i, "productId")}>
                       <Combobox<ProductDto>
                         ariaLabel={`Produk baris ${i + 1}`} value={l.productLabel} placeholder={perms.override ? "Cari produk atau ketik bebas…" : "Cari produk…"}
-                        onValueChange={(v) => patchLine(l.key, { productLabel: v, ...(l.productId ? { productId: null } : {}) })}
+                        onValueChange={(v) => patchLine(l.key, { productLabel: v, ...(l.productId ? { productId: null, programText: null } : {}) })}
                         search={(q) => api<ProductDto[]>(`/api/products/search?q=${encodeURIComponent(q)}`)}
                         onSelect={(p) => applyProduct(l.key, p)} itemKey={(p) => p.id}
                         renderItem={(p) => <div><p className="font-medium">{p.name}{p.schemeName ? ` — ${p.schemeName}` : ""}</p><p className="text-xs text-muted">{p.code} · {formatRupiah(p.defaultPrice, "PLAIN")} / {p.unit}</p></div>}
@@ -227,7 +241,7 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
                     <Field label="Harga satuan" className="md:col-span-3" htmlFor={`price-${l.key}`} error={lineErr(i, "unitPrice")} hint={priceLocked && fromProduct ? "Mengikuti harga master" : undefined}>
                       <MoneyCell ariaLabel={`Harga satuan baris ${i + 1}`} value={l.unitPrice} disabled={priceLocked} onChange={(v) => patchLine(l.key, { unitPrice: v })} />
                     </Field>
-                    <TextAreaField label="Deskripsi (tampil di invoice)" className="md:col-span-7" rows={3} value={l.description} onChange={(e) => patchLine(l.key, { description: e.target.value })} error={lineErr(i, "description")} hint="Boleh disesuaikan untuk transaksi ini tanpa mengubah data master." />
+                    <TextAreaField label="Product Description (dinamis)" className="md:col-span-7" rows={3} value={l.description} onChange={(e) => patchLine(l.key, { description: e.target.value })} error={lineErr(i, "description")} hint="Boleh ditambah nama peserta, periode, dll. Tidak memengaruhi Remark — Remark tetap mengikuti program." />
                     <div className="grid gap-3 md:col-span-5 md:grid-cols-2">
                       {perms.discount && (
                         <Field label="Diskon baris" htmlFor={`disc-${l.key}`} error={lineErr(i, "discount")}>
@@ -248,14 +262,14 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
               );
             })}
           </div>
-          {!perms.override && <p className="border-t border-line px-5 py-3 text-xs text-muted">Harga dan pajak mengikuti data master. Perubahan harga memerlukan peran Finance/Administrator.</p>}
+          {!perms.override && <p className="border-t border-line px-5 py-3 text-xs text-muted">Harga dan pajak mengikuti data master.</p>}
         </Card>
 
         <Card>
           <CardHeader title="Catatan" />
           <div className="grid gap-4 p-5 sm:grid-cols-2">
-            <TextAreaField label="Remark (dicetak pada invoice)" rows={3} value={remark} onChange={(e) => touch(setRemark)(e.target.value)} error={fieldErrors.remark}
-              placeholder={autoRemark ?? "Kosongkan untuk otomatis"} hint={autoRemark && !remark ? "Kosong → otomatis memakai deskripsi baris" : undefined} />
+            <TextAreaField label="Remark (tetap mengikuti program)" rows={3} value={remark} onChange={(e) => touch(setRemark)(e.target.value)} error={fieldErrors.remark}
+              placeholder={autoRemark ?? "Kosongkan untuk otomatis"} hint={autoRemark && !remark ? "Kosong → otomatis memakai nama program pada produk (tanpa nama peserta)." : "Isi hanya bila perlu menimpa teks program."} />
             <TextAreaField label="Catatan internal (tidak dicetak)" rows={3} value={internalNote} onChange={(e) => touch(setInternalNote)(e.target.value)} error={fieldErrors.internalNote} />
           </div>
         </Card>
@@ -279,12 +293,13 @@ export function InvoiceForm({ mode, invoice, defaults, taxes, perms }: InvoiceFo
               {calc && <p className="mt-1 text-xs italic text-muted" aria-label="Terbilang">{terbilang(calc.totalAmount)}</p>}
             </div>
             <MoneyInput label="Down Payment (DP) diterima" value={downPayment} onChange={touch(setDownPayment)} error={fieldErrors.downPayment}
-              hint="Dicatat sebagai pembayaran saat invoice terbit; mengurangi sisa tagihan, bukan nilai invoice." />
+              hint="Dicatat sebagai pembayaran saat invoice diterbitkan; mengurangi sisa tagihan, bukan nilai invoice." />
             <Row label="Sisa tagihan" value={calc ? R(calc.balanceAmount) : "—"} strong />
             {calcError && <Notice tone="warn">{calcError}</Notice>}
           </div>
           <div className="flex flex-col gap-2 border-t border-line bg-canvas/60 p-5">
-            <Button type="submit" variant="primary" loading={saving === "save"} disabled={!!saving}>Simpan draft</Button>
+            {perms.submit && <Button variant="primary" onClick={() => void save("submit")} loading={saving === "submit"} disabled={!!saving}>Simpan &amp; ajukan verifikasi</Button>}
+            <Button type="submit" variant={perms.submit ? "secondary" : "primary"} loading={saving === "save"} disabled={!!saving}>Simpan draft</Button>
             <Button onClick={() => void save("preview")} loading={saving === "preview"} disabled={!!saving}>Simpan & pratinjau PDF</Button>
             <Link href={mode === "edit" && invoice ? `/invoices/${invoice.id}` : "/invoices"} className="text-center text-sm text-muted hover:underline">Batal</Link>
           </div>

@@ -97,10 +97,11 @@ beberapa baris dengan referensi yang sama). Tabel tambahan di luar daftar brief:
 
 - Invoice **ISSUED/CANCELLED**: semua kolom isi/nilai/snapshot/nomor tidak dapat diubah; hanya `paidAmount/balanceAmount/paymentStatus`,
   catatan internal, dan transisi `ISSUED→CANCELLED` yang diizinkan. Tidak dapat dihapus. Draft tidak dapat dibatalkan.
+- Invoice **SUBMITTED** (menunggu verifikasi): isi & nilai (tanggal, metode/jangka waktu, pelanggan, seluruh nominal, DP, pembuat, pengaju) **terkunci** oleh trigger — SQL langsung pun ditolak. Transisi yang diizinkan hanya `SUBMITTED→DRAFT` (kembali/tarik) dan `SUBMITTED→ISSUED` dengan nilai **identik** dengan yang diajukan.
 - `invoice_items` hanya dapat diubah selagi invoice induk `DRAFT`.
 - `payments`, `audit_logs`, `stored_files`: `UPDATE`/`DELETE` ditolak. Pembalikan harus bernilai persis `−` pembayaran asal pada invoice yang sama.
 - CHECK: `total = subtotal − diskon tambahan + pajak + transport + administrasi`; `balance = total − paid`; `0 ≤ paid ≤ total`;
-  draft tidak bernomor, terbit wajib bernomor; semua nominal ≥ 0.
+  draft & menunggu verifikasi tidak bernomor, terbit wajib bernomor; invoice yang diajukan wajib mencatat pengaju & waktu; semua nominal ≥ 0.
 - Semua relasi `ON DELETE RESTRICT` (tidak ada cascade ke data keuangan).
 
 ## 5. Aturan keuangan
@@ -143,24 +144,36 @@ Diuji: 10 penerbitan paralel → 10 nomor berurutan; 4 permintaan terbit paralel
 ## 7. Siklus hidup invoice & pembayaran
 
 ```
- DRAFT ──(terbitkan: kunci baris → hitung ulang → nomor → snapshot → DP→ledger → audit)──► ISSUED ──(batal, alasan wajib)──► CANCELLED
-   │ edit (optimistic locking `version`), hapus draft                │ pembayaran / pembalikan (ledger)         │ tak dapat diaktifkan kembali
+                    ┌──────────── kembalikan (alasan wajib) / tarik kembali oleh pengaju ────────────┐
+                    ▼                                                                                │
+ DRAFT ──(ajukan: validasi + hitung ulang + bekukan baris)──► SUBMITTED ──(setujui & terbitkan)──► ISSUED ──(batal, alasan wajib)──► CANCELLED
+   │ edit (optimistic locking `version`), hapus draft          │ isi TERKUNCI,         │ nomor + snapshot + DP→ledger    │ pembayaran / pembalikan (ledger)
+   └──(penyetuju menerbitkan draftnya sendiri: kunci → hitung ulang → nomor → snapshot → DP→ledger → audit)────────────►│
 ```
 
+- **Alur kerja dua orang (pemisahan tugas):** *Staff Operasional* menginput data lengkap (termasuk harga, diskon, pajak) lalu **mengajukan**.
+  *Finance Manager* (atau Administrator) melihat seluruh data, lalu **menyetujui & menerbitkan** atau **mengembalikan** ke staff dengan alasan wajib
+  (staff memperbaiki lalu mengajukan ulang). Pengaju dapat **menarik kembali** selama belum diverifikasi.
+- Selama **SUBMITTED**, isi terkunci (aplikasi + trigger DB) sehingga yang diperiksa = yang diterbitkan. Saat persetujuan, server **menghitung ulang** dari data
+  tersimpan dan menolak bila hasilnya berbeda dari yang diajukan (mis. tarif pajak diubah di antaranya) → kembalikan ke staff untuk diajukan ulang.
+- Penyetuju boleh menerbitkan draft **miliknya sendiri** langsung (tanpa pengajuan); semuanya tercatat di audit log (pengaju ≠ penyetuju terlihat jelas).
 - Perubahan setelah terbit: **batalkan lalu terbitkan ulang** (opsi "buat draft pengganti" menautkan invoice baru ke yang batal).
 - Invoice dengan pembayaran aktif **tidak dapat dibatalkan** sampai pembayarannya dibalikkan (jejak uang tetap utuh).
 - Status pembayaran tersimpan: `UNPAID / PARTIALLY_PAID / PAID`; tampilan menambahkan **Overdue** yang diturunkan.
-- Setiap operasi yang menyentuh satu invoice memanggil `lockInvoice` (`SELECT … FOR UPDATE`) → klik ganda, dua tab, atau dua pengguna tidak dapat menimbulkan penerbitan/pembayaran ganda.
+- Setiap operasi yang menyentuh satu invoice memanggil `lockInvoice` (`SELECT … FOR UPDATE`) → klik ganda, dua tab, atau dua pengguna tidak dapat menimbulkan persetujuan/pembayaran ganda.
+- Invoice **SUBMITTED** bukan omzet: tidak masuk dashboard (selain tile "Menunggu verifikasi"), laporan, piutang, maupun pembayaran.
 
 ## 8. RBAC (least privilege) — ditegakkan di service
 
-| Izin | Admin | Finance | Staff |
+| Izin | Admin (pemilik) | Finance Manager | Staff Operasional |
 |---|:--:|:--:|:--:|
 | Dashboard, laporan, pembayaran (lihat) | ✔ | ✔ | — |
-| Lihat semua invoice / hanya miliknya | semua | semua | **milik sendiri** |
+| Lihat semua invoice / hanya miliknya | semua | **semua, data lengkap** | **milik sendiri** |
 | Buat/edit/hapus **draft**, duplikasi | ✔ | ✔ | ✔ (draft sendiri) |
-| Ubah harga/pajak dari master, baris tanpa produk, diskon | ✔ | ✔ | — |
-| Terbitkan, batalkan, unduh PDF invoice terbit | ✔ | ✔ | — (hanya pratinjau draft sendiri) |
+| Input lengkap: harga/pajak dari master, baris tanpa produk, diskon | ✔ | ✔ | ✔ |
+| **Ajukan** untuk verifikasi / tarik kembali | ✔ | — (menerbitkan langsung) | ✔ (milik sendiri) |
+| **Setujui & terbitkan** / kembalikan ke staff | ✔ | ✔ | — |
+| Batalkan, unduh PDF invoice terbit, riwayat per invoice | ✔ | ✔ | — (hanya pratinjau PDF *draft* sendiri) |
 | Catat & balikkan pembayaran | ✔ | ✔ | — |
 | Pelanggan: lihat/tambah · ubah/arsip | ✔ | ✔ | lihat/tambah · — |
 | Produk: lihat · kelola | ✔ | lihat · — | lihat · — |
@@ -168,29 +181,47 @@ Diuji: 10 penerbitan paralel → 10 nomor berurutan; 4 permintaan terbit paralel
 | Audit log (lengkap) · riwayat per invoice | ✔ · ✔ | — · ✔ | — · — |
 
 Sumber kebenaran: `src/lib/permissions.ts` (dengan tes). Invoice milik orang lain bagi Staff → **404** (tidak membocorkan keberadaan).
+Peran Administrator tidak berubah. Label peran di UI: *Administrator*, *Finance Manager*, *Staff Operasional* (nilai internal enum tetap `ADMIN/FINANCE/STAFF`).
 
 ## 9. Audit trail
 
-Dicatat (dengan pelaku, peran, IP, waktu, sebelum/sesudah, alasan): login/logout/gagal, pembuatan & perubahan draft, penerbitan, pembatalan,
+Dicatat (dengan pelaku, peran, IP, waktu, sebelum/sesudah, alasan): login/logout/gagal, pembuatan & perubahan draft, pengajuan, penarikan, pengembalian (dengan alasan), persetujuan & penerbitan, pembatalan,
 duplikasi, penghapusan draft, pembayaran & pembalikan, perubahan master data (pelanggan, produk, pajak, rekening, pengaturan, penomoran),
-manajemen pengguna & password, unggah file, **unduhan PDF invoice terbit**, ekspor laporan. Tabel append-only di level database.
+manajemen pengguna & password, unggah file, **unduhan PDF** (termasuk draft berwatermark), ekspor laporan. Tabel append-only di level database.
 
 ## 10. PDF
 
 `src/server/pdf/` — template (`InvoicePdf.tsx`) murni presentasi; `document-data.ts` menyusun data **hanya dari snapshot tersimpan**
-(invoice terbit/batal) atau data tersimpan + master saat ini (draft, berwatermark, tanpa cap/tanda tangan). Teks/nominal tidak pernah berasal dari input browser.
+(invoice terbit/batal) atau data tersimpan + master saat ini (draft & menunggu verifikasi). Teks/nominal tidak pernah berasal dari input browser.
 Font Times (bawaan PDF) = padanan Times New Roman referensi. Hyphenation dimatikan agar istilah tidak terpotong. Baris terakhir tabel
 dipertahankan bersama blok total (`minPresenceAhead`) agar total tidak terpisah dari konteksnya.
 
-Deviasi sadar dari referensi: (a) A4 portrait (sesuai brief) bukan format lebar; (b) nominal rata kanan; (c) nilai nol tetap ditampilkan "0" seperti referensi;
-(d) baris *Subtotal/Discount/Sisa Tagihan* hanya muncul bila relevan; (e) nama penandatangan mengikuti brief (`Elva Aditya Fawwaz, S.E.`) — referensi bertuliskan `Elva Aditya S, S.E.` (ubah di Pengaturan).
+**Format A4 landscape** (revisi): header tiga kolom simetris — identitas lembaga (kiri) · judul **INVOICE** (tepat di tengah halaman) · blok
+*Number / Inv. Date / Payment Term / Due Date* (menempel di tepi kanan, nilai rata kanan sejajar kolom *Nett Amount*). Bagian bawah memakai tiga kolom:
+Inword/Remark/Transfer Via · *Sincerely, Finance Manager* + tanda tangan/cap · ringkasan biaya.
+
+**Product Description vs Remark:** *Product Description* adalah teks **dinamis** per transaksi (template produk sebagai awal; staff dapat menambah nama peserta,
+periode, dll; maks 3.000 karakter, boleh mengalir ke halaman berikut). *Remark* adalah teks **program yang tetap** — `InvoiceItem.programText`, hasil template produk yang
+dibekukan saat baris disimpan — sehingga nama peserta tidak ikut tercantum. Prioritas: isian Remark manual → teks program (unik, digabung `; `) → (baris bebas tunggal) deskripsinya.
+
+**Kontrol anti-pemalsuan (dokumen belum resmi):** invoice berstatus DRAFT/SUBMITTED dirender dengan watermark besar **DRAFT** (digambar di atas isi, tidak dapat tertutup),
+tag `** DRAFT **`, kalimat peringatan di kaki halaman, nomor `DRAFT`, penandatangan `( menunggu verifikasi )`, dan **tanpa cap & tanda tangan**.
+Pembatasan ini diterapkan di sumber data (`document-data.ts` tidak memuat file cap/tanda tangan untuk dokumen yang belum disetujui), bukan sekadar disembunyikan di template.
+Nomor, nama penandatangan (**Finance Manager**), cap, dan tanda tangan baru muncul setelah invoice disetujui & diterbitkan; semuanya dibekukan di snapshot.
+Unduhan PDF (termasuk draft) dicatat di audit log; tombol unduh hanya tersedia untuk invoice terbit.
+
+Deviasi sadar dari referensi: (a) **A4 landscape** (atas permintaan revisi; referensi portrait); (b) nominal rata kanan; (c) nilai nol tetap ditampilkan "0" seperti referensi;
+(d) baris *Subtotal/Discount/Sisa Tagihan* hanya muncul bila relevan; (e) nama penandatangan mengikuti brief (`Elva Aditya Fawwaz, S.E.`) — referensi bertuliskan `Elva Aditya S, S.E.` (ubah di Pengaturan);
+(f) jabatan penandatangan **Finance Manager** (referensi: Finance).
 
 ## 11. Risiko teknis & mitigasi
 
 | Risiko | Mitigasi | Bukti |
 |---|---|---|
 | Nomor ganda / lubang akibat konkurensi | Row lock + UNIQUE + alokasi dalam transaksi | Tes paralel (service & E2E) |
-| Penerbitan ganda (klik ganda) | `lockInvoice` + cek status setelah kunci | Tes 4× paralel → 1 sukses |
+| Penerbitan/persetujuan ganda (klik ganda) | `lockInvoice` + cek status setelah kunci | Tes 4× paralel → 1 sukses; persetujuan paralel → 1 sukses |
+| Isi diubah setelah diajukan/diperiksa | Isi SUBMITTED dikunci (aplikasi + trigger) dan persetujuan menghitung ulang & mensyaratkan hasil identik | Tes service + SQL langsung ditolak |
+| Dokumen draft disalahgunakan sebagai invoice resmi | Watermark DRAFT, tanpa nomor/cap/tanda tangan di sumber data, peringatan di kaki halaman | Tes PDF (teks + hitung gambar) |
 | Invoice lama berubah diam-diam | Snapshot + trigger DB + service menolak | Tes SQL langsung ditolak |
 | Salah hitung / pembulatan | BigInt, urutan eksplisit, satu pembulatan, CHECK identitas total | Tes unit kalkulasi/terbilang + CHECK DB |
 | Cache pembayaran ≠ ledger | Update dalam transaksi + `db:reconcile` | Tes + skrip rekonsiliasi |

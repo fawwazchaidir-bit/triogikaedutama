@@ -87,7 +87,7 @@ export default async function InvoicesPage({ searchParams }: { searchParams: SP 
         )}
         <FilterField label="Status invoice">
           <select name="status" defaultValue={f.status ?? ""} className={filterInput}>
-            <option value="">Semua</option><option value="DRAFT">Draft</option><option value="ISSUED">Diterbitkan</option><option value="CANCELLED">Dibatalkan</option>
+            <option value="">Semua</option><option value="DRAFT">Draft</option><option value="SUBMITTED">Menunggu verifikasi</option><option value="ISSUED">Diterbitkan</option><option value="CANCELLED">Dibatalkan</option>
           </select>
         </FilterField>
         <FilterField label="Status pembayaran">

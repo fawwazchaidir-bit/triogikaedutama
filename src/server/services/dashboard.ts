@@ -24,7 +24,7 @@ export const dashboardQuerySchema = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
   customerId: z.string().uuid().optional(),
-  status: z.enum(["DRAFT", "ISSUED", "CANCELLED"]).optional(),
+  status: z.enum(["DRAFT", "SUBMITTED", "ISSUED", "CANCELLED"]).optional(),
   paymentStatus: z.enum(["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE"]).optional(),
   q: z.string().max(60).optional(),
 });
@@ -47,6 +47,8 @@ export interface DashboardData {
   overdueAmount: number;
   cancelledCount: number;
   draftCount: number;
+  /** Invoice menunggu verifikasi Finance Manager */
+  pendingCount: number;
   /** Tren per bulan pada periode terpilih */
   trend: { month: string; invoiced: number; received: number }[];
 }
@@ -84,7 +86,7 @@ export async function getDashboard(actor: Actor, raw: unknown = {}): Promise<Das
   const customerSql = f.customerId ? Prisma.sql`AND i."customerId" = ${f.customerId}::uuid` : Prisma.empty;
   const qSql = f.q ? Prisma.sql`AND i."number" ILIKE ${"%" + f.q + "%"}` : Prisma.empty;
 
-  const [monthAgg, yearAgg, issuedAgg, unpaid, partial, paid, overdueAgg, cancelled, drafts, cash, invTrend, cashTrend] = await Promise.all([
+  const [monthAgg, yearAgg, issuedAgg, unpaid, partial, paid, overdueAgg, cancelled, drafts, pending, cash, invTrend, cashTrend] = await Promise.all([
     prisma.invoice.aggregate({ where: { ...base, status: "ISSUED", invoiceDate: { gte: monthStart } }, _sum: { totalAmount: true } }),
     prisma.invoice.aggregate({ where: { ...base, status: "ISSUED", invoiceDate: { gte: yearStart } }, _sum: { totalAmount: true } }),
     prisma.invoice.aggregate({ where: issued, _sum: { totalAmount: true, balanceAmount: true }, _count: { _all: true } }),
@@ -94,16 +96,17 @@ export async function getDashboard(actor: Actor, raw: unknown = {}): Promise<Das
     prisma.invoice.aggregate({ where: { ...issuedBase, balanceAmount: { gt: 0n }, dueDate: { lt: isoToDate(today) } }, _sum: { balanceAmount: true }, _count: { _all: true } }),
     prisma.invoice.count({ where: { ...inPeriod, status: "CANCELLED" } }),
     prisma.invoice.count({ where: { ...inPeriod, status: "DRAFT" } }),
+    prisma.invoice.count({ where: { ...inPeriod, status: "SUBMITTED" } }),
     prisma.$queryRaw<{ total: bigint | null }[]>`
       SELECT SUM(p."amount") AS total FROM payments p JOIN invoices i ON i."id" = p."invoiceId"
-       WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" <> 'DRAFT' ${customerSql} ${qSql}`,
+       WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" NOT IN ('DRAFT','SUBMITTED') ${customerSql} ${qSql}`,
     prisma.$queryRaw<{ m: string; amount: bigint }[]>`
       SELECT to_char(i."invoiceDate", 'YYYY-MM') AS m, SUM(i."totalAmount") AS amount FROM invoices i
        WHERE i."status" = 'ISSUED' AND i."invoiceDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} ${customerSql} ${qSql}
        GROUP BY 1`,
     prisma.$queryRaw<{ m: string; amount: bigint }[]>`
       SELECT to_char(p."paymentDate", 'YYYY-MM') AS m, SUM(p."amount") AS amount FROM payments p JOIN invoices i ON i."id" = p."invoiceId"
-       WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" <> 'DRAFT' ${customerSql} ${qSql}
+       WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" NOT IN ('DRAFT','SUBMITTED') ${customerSql} ${qSql}
        GROUP BY 1`,
   ]);
 
@@ -125,7 +128,7 @@ export async function getDashboard(actor: Actor, raw: unknown = {}): Promise<Das
     receivedAmount: n(cash[0]?.total), outstandingAmount: n(issuedAgg._sum.balanceAmount),
     unpaidCount: unpaid, partialCount: partial, paidCount: paid,
     overdueCount: overdueAgg._count._all, overdueAmount: n(overdueAgg._sum.balanceAmount),
-    cancelledCount: cancelled, draftCount: drafts,
+    cancelledCount: cancelled, draftCount: drafts, pendingCount: pending,
     trend: months.map((m) => ({ month: m, invoiced: inv.get(m) ?? 0, received: rec.get(m) ?? 0 })),
   };
 }

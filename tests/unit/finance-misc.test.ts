@@ -14,7 +14,7 @@ import {
 } from "@/lib/finance/invoice-number";
 import { formatRupiah, formatNumberId, parseRupiahInput } from "@/lib/finance/money";
 import { formatDateLong, formatDateShort, todayIso } from "@/lib/format";
-import { can, ROLE_PERMISSIONS, PERMISSIONS, visibleNav } from "@/lib/permissions";
+import { can, ROLE_LABELS, ROLE_PERMISSIONS, PERMISSIONS, visibleNav } from "@/lib/permissions";
 
 describe("tanggal jatuh tempo", () => {
   it("contoh brief: 13 Jan 2026 + 4 hari kalender = 17 Jan 2026", () => {
@@ -152,25 +152,35 @@ describe("matriks hak akses (least privilege)", () => {
   it("ADMIN memiliki seluruh izin", () => {
     for (const p of PERMISSIONS) expect(can("ADMIN", p)).toBe(true);
   });
-  it("STAFF tidak dapat menerbitkan, membatalkan, mencatat pembayaran, atau mengubah konfigurasi", () => {
+  it("STAFF Operasional: input data invoice lengkap + mengajukan; tidak dapat menyetujui, membatalkan, membayar, atau mengubah konfigurasi", () => {
     for (const p of [
-      "invoice:issue", "invoice:cancel", "invoice:pdf", "invoice:override_price", "invoice:discount",
+      "invoice:approve", "invoice:cancel", "invoice:pdf", "invoice:view", "invoice:history",
       "payment:record", "payment:reverse", "payment:view", "report:view", "audit:view",
       "settings:manage", "numbering:manage", "tax:manage", "user:manage", "product:manage", "customer:archive",
     ] as const) {
       expect(can("STAFF", p), p).toBe(false);
     }
-    expect(can("STAFF", "invoice:create")).toBe(true);
-    expect(can("STAFF", "invoice:view")).toBe(false); // hanya milik sendiri
-    expect(can("STAFF", "invoice:view_own")).toBe(true);
+    for (const p of [
+      "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit", "invoice:preview_draft", "invoice:view_own",
+    ] as const) {
+      expect(can("STAFF", p), p).toBe(true);
+    }
   });
-  it("FINANCE tidak dapat mengelola pengguna, penomoran, pajak, atau audit log", () => {
+  it("FINANCE Manager: memverifikasi (setujui/kembalikan) dan melihat seluruh invoice; tidak mengelola pengguna, penomoran, pajak, atau audit log", () => {
     for (const p of ["user:manage", "numbering:manage", "tax:manage", "settings:manage", "audit:view", "product:manage"] as const) {
       expect(can("FINANCE", p), p).toBe(false);
     }
-    for (const p of ["invoice:issue", "invoice:cancel", "payment:record", "invoice:pdf", "report:view"] as const) {
+    for (const p of [
+      "invoice:approve", "invoice:view", "invoice:history", "invoice:cancel", "payment:record", "invoice:pdf", "invoice:preview_draft", "report:view",
+    ] as const) {
       expect(can("FINANCE", p), p).toBe(true);
     }
+    // pengajuan adalah tugas staff; penyetuju menerbitkan langsung
+    expect(can("FINANCE", "invoice:submit")).toBe(false);
+  });
+  it("hanya penyetuju (Finance Manager & Administrator) yang dapat menyetujui invoice", () => {
+    expect((["ADMIN", "FINANCE", "STAFF"] as const).filter((r) => can(r, "invoice:approve"))).toEqual(["ADMIN", "FINANCE"]);
+    expect(ROLE_LABELS).toEqual({ ADMIN: "Administrator", FINANCE: "Finance Manager", STAFF: "Staff Operasional" });
   });
   it("menu sidebar sesuai peran (Invoice tampil untuk ketiganya)", () => {
     const labels = (r: "ADMIN" | "FINANCE" | "STAFF") => visibleNav(r).map((i) => i.label);

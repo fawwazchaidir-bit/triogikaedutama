@@ -21,12 +21,15 @@ REST JSON di bawah `/api`. Dipakai oleh UI aplikasi; dapat dipakai pihak lain **
 |---|---|---|
 | `POST /api/auth/login` · `POST /api/auth/logout` · `POST /api/auth/password` · `GET /api/me` | publik · login | Sesi & ganti password sendiri |
 | `GET /api/health` | publik | Health check (`{status:"ok"}`) |
-| `GET/POST /api/invoices` | `invoice:view(_own)` · `invoice:create` | Daftar (filter: `q from to customerId status paymentStatus sort dir`) · buat **draft** |
+| `GET/POST /api/invoices` | `invoice:view(_own)` · `invoice:create` | Daftar (filter: `q from to customerId status[DRAFT|SUBMITTED|ISSUED|CANCELLED] paymentStatus sort dir`) · buat **draft** |
 | `GET/PUT/DELETE /api/invoices/:id` | lihat · `invoice:create` | Detail · ubah draft (`expectedVersion` → optimistic locking) · hapus draft |
-| `POST /api/invoices/:id/issue` | `invoice:issue` | Terbitkan (`{ expectedTotalAmount? }`); `409` bila sudah terbit/total berubah |
+| `POST /api/invoices/:id/submit` | `invoice:submit` | Ajukan draft sendiri untuk verifikasi → `SUBMITTED` (isi terkunci); `409` bila pajak nonaktif/pelanggan diarsipkan |
+| `POST /api/invoices/:id/recall` | `invoice:submit` | Tarik kembali pengajuan sendiri → `DRAFT` |
+| `POST /api/invoices/:id/reject` | `invoice:approve` | Kembalikan ke staff `{ reason }` (5–300 karakter) → `DRAFT` |
+| `POST /api/invoices/:id/issue` | `invoice:approve` | **Setujui & terbitkan** (`{ expectedTotalAmount? }`) dari `SUBMITTED` atau `DRAFT`; `409` bila sudah terbit, total berubah, atau hasil hitung berbeda dari yang diajukan |
 | `POST /api/invoices/:id/cancel` | `invoice:cancel` | `{ reason, createReplacement? }` |
 | `POST /api/invoices/:id/duplicate` | `invoice:create` | Salin sebagai draft baru |
-| `GET /api/invoices/:id/pdf[?download=1]` | `invoice:pdf` / `invoice:preview_draft` | PDF dari snapshot tersimpan; unduhan tercatat di audit |
+| `GET /api/invoices/:id/pdf[?download=1]` | `invoice:pdf` / `invoice:preview_draft` | PDF **A4 landscape** dari data tersimpan. Draft/menunggu verifikasi → watermark DRAFT tanpa nomor/cap/tanda tangan; unduhan tercatat di audit |
 | `GET /api/invoices/:id/history` | `invoice:history` | Riwayat audit invoice |
 | `GET /api/invoices/export?format=csv\|xlsx&…filter` | lihat | Ekspor sesuai filter daftar |
 | `GET/POST /api/payments` · `POST /api/payments/:id/reverse` · `POST /api/payments/proof` | `payment:view` · `payment:record` · `payment:reverse` | Ledger; catat; pembalikan (`{reason}`); unggah bukti (multipart) |

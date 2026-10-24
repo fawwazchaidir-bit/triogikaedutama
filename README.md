@@ -4,21 +4,21 @@ Aplikasi invoice internal **Trilogika Edutama** yang menggantikan pembuatan invo
 data dimasukkan **sekali**, disimpan terstruktur di PostgreSQL, lalu dipakai ulang untuk nomor otomatis, perhitungan,
 terbilang, PDF, pembayaran, dashboard, dan laporan.
 
-> Aplikasi **berfungsi penuh** (bukan mockup): login berperan, master data, mesin invoice, PDF A4, pembayaran,
+> Aplikasi **berfungsi penuh** (bukan mockup): login berperan, master data, mesin invoice dengan alur persetujuan, PDF A4 landscape, pembayaran,
 > dashboard, laporan, audit log — semuanya tersimpan permanen di database dan diuji (lihat [Pengujian](#pengujian)).
 
 ## Fitur
 
 | Area | Ringkasan |
 |---|---|
-| **Invoice** | Draft → pratinjau PDF → terbitkan → unduh PDF. Nomor otomatis & unik (aman untuk pengguna bersamaan), jatuh tempo otomatis (hari kalender/kerja), banyak item, diskon, pajak, transport, administrasi, DP, terbilang bahasa Indonesia. Duplikasi, pembatalan (nomor & riwayat dipertahankan), ekspor CSV/Excel. |
+| **Invoice** | **Staff Operasional** menginput data lengkap → **ajukan** → **Finance Manager** memeriksa (melihat seluruh data) lalu **menyetujui & menerbitkan** atau **mengembalikan** dengan alasan → unduh PDF resmi. Nomor otomatis & unik (aman untuk pengguna bersamaan), jatuh tempo otomatis (hari kalender/kerja), banyak item, diskon, pajak, transport, administrasi, DP, terbilang bahasa Indonesia. Duplikasi, pembatalan (nomor & riwayat dipertahankan), ekspor CSV/Excel. |
 | **Keuangan** | Mesin kalkulasi terpusat berbasis bilangan bulat Rupiah (BigInt), urutan perhitungan eksplisit, satu aturan pembulatan, pajak dapat dikonfigurasi (tarif, DPP pecahan, inklusif/eksklusif). |
 | **Snapshot** | Invoice terbit membekukan pelanggan, lembaga, rekening, harga, dan pajak. Mengubah master tidak mengubah invoice lama — dijaga aplikasi **dan** trigger database. |
 | **Pembayaran** | Buku besar *append-only*; pembayaran sebagian/lunas; koreksi lewat pembalikan (tidak ada penghapusan); bukti bayar; kelebihan bayar ditolak. |
-| **PDF** | A4 portrait meniru invoice referensi Trilogika; deskripsi panjang & banyak item membungkus otomatis; header tabel berulang; watermark DRAFT/DIBATALKAN; logo, cap, tanda tangan dari Pengaturan; nama file otomatis `Invoice_00434_CV_Bima_Satria_Jaya.pdf`. |
+| **PDF** | **A4 landscape** meniru invoice referensi Trilogika (judul INVOICE di tengah, blok Number/Inv. Date/Payment Term/Due Date mepet kanan); *Product Description* dinamis (nama peserta, dll) sedangkan *Remark* tetap mengikuti program; deskripsi panjang & banyak item membungkus otomatis; header tabel berulang; **watermark DRAFT** pada dokumen yang belum diverifikasi (tanpa nomor, tanda tangan, dan cap — baru muncul setelah disetujui Finance Manager), watermark DIBATALKAN; logo, cap, tanda tangan dari Pengaturan; nama file otomatis `Invoice_00434_CV_Bima_Satria_Jaya.pdf`. |
 | **Master data** | Pelanggan (autocomplete, pencegahan duplikasi, arsip, riwayat & piutang), produk/layanan (template deskripsi otomatis), pajak, rekening bank. |
 | **Dashboard & laporan** | 10 metrik dengan definisi eksplisit (nilai invoice ≠ kas ≠ piutang), grafik tren, 9 laporan + ekspor CSV/XLSX. |
-| **Keamanan** | Login berperan (Administrator / Finance / Staff, least privilege) ditegakkan di backend, sesi ber-hash, scrypt, rate limit login, CSRF, header keamanan, validasi unggahan berdasarkan isi file, audit log append-only. |
+| **Keamanan** | Login berperan (Administrator / Finance Manager / Staff Operasional, least privilege; pemisahan tugas input ↔ verifikasi) ditegakkan di backend, sesi ber-hash, scrypt, rate limit login, CSRF, header keamanan, validasi unggahan berdasarkan isi file, audit log append-only. |
 
 ## Teknologi
 
@@ -91,8 +91,8 @@ Prinsip lapisan: **UI** → **API route (route wrapper: sesi, CSRF, error aman)*
 - **Unit** (`tests/unit`): kalkulasi (termasuk pajak DPP 11/12, diskon pro-rata, DP), terbilang, jatuh tempo, penomoran, template, RBAC, pagar struktural API.
 - **Integration** (`tests/integration`, PostgreSQL asli): skenario CV Bima Satria Jaya (Rp14.000.000), nomor unik pada **10 penerbitan paralel**,
   klik ganda, rollback transaksi, snapshot vs perubahan master, ledger & pembalikan, pembayaran paralel, imutabilitas lewat SQL langsung,
-  RBAC di service, laporan/dashboard/ekspor (+ proteksi formula-injection), PDF (teks, snapshot, multi-halaman, watermark), persistensi.
-- **E2E** (`tests/e2e`, build produksi): alur UI penuh sampai PDF & pembayaran, dua tab menerbitkan bersamaan, RBAC lewat UI & API,
+  RBAC di service, alur persetujuan (ajukan → setujui/kembalikan, penguncian isi di aplikasi **dan** database, persetujuan paralel), Remark vs Product Description, laporan/dashboard/ekspor (+ proteksi formula-injection), PDF (landscape, teks, snapshot, multi-halaman, watermark DRAFT/DIBATALKAN, nomor/cap/tanda tangan hanya setelah disetujui), persistensi.
+- **E2E** (`tests/e2e`, build produksi): alur UI penuh sampai PDF & pembayaran, alur Staff → Finance Manager (ajukan, kembalikan, setujui), dua tab menerbitkan bersamaan, RBAC lewat UI & API,
   CSRF, rate limit login, header keamanan.
 
 ## Dokumentasi

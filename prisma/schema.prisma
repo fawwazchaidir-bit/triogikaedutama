@@ -27,6 +27,8 @@ enum Role {
 
 enum InvoiceStatus {
   DRAFT
+  /// Diajukan staff, menunggu verifikasi Finance Manager. Isi dikunci; PDF berwatermark DRAFT dan tanpa nomor/cap/tanda tangan.
+  SUBMITTED
   ISSUED
   CANCELLED
 }
@@ -97,14 +99,16 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  sessions        Session[]
-  customers       Customer[]   @relation("CustomerCreatedBy")
-  invoicesCreated Invoice[]    @relation("InvoiceCreatedBy")
-  invoicesIssued  Invoice[]    @relation("InvoiceIssuedBy")
-  invoicesCancel  Invoice[]    @relation("InvoiceCancelledBy")
-  payments        Payment[]
-  files           StoredFile[]
-  auditLogs       AuditLog[]
+  sessions          Session[]
+  customers         Customer[]   @relation("CustomerCreatedBy")
+  invoicesCreated   Invoice[]    @relation("InvoiceCreatedBy")
+  invoicesIssued    Invoice[]    @relation("InvoiceIssuedBy")
+  invoicesCancel    Invoice[]    @relation("InvoiceCancelledBy")
+  invoicesSubmitted Invoice[]    @relation("InvoiceSubmittedBy")
+  invoicesRejected  Invoice[]    @relation("InvoiceRejectedBy")
+  payments          Payment[]
+  files             StoredFile[]
+  auditLogs         AuditLog[]
 
   @@map("users")
 }
@@ -233,7 +237,7 @@ model CompanySettings {
   signatureFileId String? @db.Uuid
 
   signerName  String
-  signerTitle String @default("Finance")
+  signerTitle String @default("Finance Manager")
   closingText String @default("Sincerely,")
 
   defaultPaymentMethod   String       @default("Transfer")
@@ -378,6 +382,13 @@ model Invoice {
   /// Opsi tampilan (gaya Rupiah, sumber terbilang) yang berlaku saat terbit.
   displaySnapshot Json?
 
+  /// Alur verifikasi: diajukan (SUBMITTED) → disetujui (ISSUED) atau dikembalikan ke DRAFT dengan alasan.
+  submittedAt     DateTime?
+  submittedById   String?   @db.Uuid
+  rejectedAt      DateTime?
+  rejectedById    String?   @db.Uuid
+  rejectionReason String?
+
   issuedAt      DateTime?
   issuedById    String?   @db.Uuid
   cancelledAt   DateTime?
@@ -398,6 +409,8 @@ model Invoice {
   createdBy      User         @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   issuedBy       User?        @relation("InvoiceIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
   cancelledBy    User?        @relation("InvoiceCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  submittedBy    User?        @relation("InvoiceSubmittedBy", fields: [submittedById], references: [id], onDelete: Restrict)
+  rejectedBy     User?        @relation("InvoiceRejectedBy", fields: [rejectedById], references: [id], onDelete: Restrict)
   replaces       Invoice?     @relation("InvoiceReplacement", fields: [replacesInvoiceId], references: [id], onDelete: Restrict)
   replacedBy     Invoice[]    @relation("InvoiceReplacement")
   duplicatedFrom Invoice?     @relation("InvoiceDuplicate", fields: [duplicatedFromId], references: [id], onDelete: Restrict)
@@ -422,6 +435,9 @@ model InvoiceItem {
 
   productId   String? @db.Uuid
   productCode String?
+  /// Deskripsi TETAP program (hasil template master produk, satu baris). Dasar "Remark" pada invoice —
+  /// terpisah dari `description` yang dinamis (boleh memuat nama peserta, dll).
+  programText String?
   description String
   /// Maksimal 3 desimal (mis. 1,5 hari).
   quantity    Decimal @db.Decimal(14, 3)

@@ -38,7 +38,7 @@ export async function seedFixtures(opts: { confirmNumbering?: boolean; start?: n
     data: {
       id: 1, name: "TRILOGIKA EDUTAMA", tagline: "Light & Insight", address: "Jambon 01/21, Trihanggo, Gamping, Sleman",
       phone: "0857-0124-6319", email: "info@trilogikaedutama.id", npwp: "65.472.603.3-542.000",
-      signerName: "Elva Aditya Fawwaz, S.E.", signerTitle: "Finance", closingText: "Sincerely,",
+      signerName: "Elva Aditya Fawwaz, S.E.", signerTitle: "Finance Manager", closingText: "Sincerely,",
       defaultPaymentMethod: "Transfer", defaultPaymentTermDays: 4,
       invoiceNumberFormat: "{SEQ:5}", invoiceNumberReset: "NEVER", invoiceNumberStart: opts.start ?? 434,
       invoiceNumberConfirmedAt: opts.confirmNumbering === false ? null : new Date(),

@@ -24,7 +24,8 @@ export const dynamic = "force-dynamic";
 
 const ACTION_LABELS: Record<string, string> = {
   "invoice.create_draft": "Draft dibuat", "invoice.update_draft": "Draft diubah", "invoice.delete_draft": "Draft dihapus",
-  "invoice.issue": "Diterbitkan", "invoice.cancel": "Dibatalkan", "invoice.duplicate": "Disalin dari invoice lain",
+  "invoice.submit": "Diajukan untuk verifikasi", "invoice.recall": "Pengajuan ditarik kembali", "invoice.reject": "Dikembalikan ke staff",
+  "invoice.issue": "Disetujui & diterbitkan", "invoice.cancel": "Dibatalkan", "invoice.duplicate": "Disalin dari invoice lain",
   "payment.record": "Pembayaran dicatat", "payment.reverse": "Pembayaran dibalikkan", "invoice.pdf_download": "PDF diunduh",
 };
 
@@ -35,19 +36,20 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
   const inv = await getInvoice(user, id.data).catch((e: unknown) => { if (e instanceof AppError && e.code === "NOT_FOUND") notFound(); throw e; });
   const sp = await searchParams;
   const perm = invoiceCan(user.role, user.userId, inv);
-  const payments = can(user.role, "payment:view") && inv.status !== "DRAFT" ? await listPaymentsForInvoice(user, inv.id) : null;
+  const payments = can(user.role, "payment:view") && (inv.status === "ISSUED" || inv.status === "CANCELLED") ? await listPaymentsForInvoice(user, inv.id) : null;
   const history = can(user.role, "invoice:history") ? await getInvoiceHistory(user, inv.id) : null;
   const R = (n: number) => formatRupiah(n, "PLAIN");
   const a = inv.amounts;
   const canReverse = can(user.role, "payment:reverse") && inv.status === "ISSUED";
   const isDraft = inv.status === "DRAFT";
+  const isSubmitted = inv.status === "SUBMITTED";
 
   return (
     <div>
       <PageHeader
-        title={inv.number ? `Invoice ${inv.number}` : "Draft invoice"}
+        title={inv.number ? `Invoice ${inv.number}` : isSubmitted ? "Invoice menunggu verifikasi" : "Draft invoice"}
         description={inv.customerName}
-        actions={<InvoiceActions variant="bar" inv={{ id: inv.id, number: inv.number, status: inv.status, customerName: inv.customerName, totalAmount: a.total, balanceAmount: a.balance }} can={perm} initialDialog={sp.preview === "1" && (perm.pdf || perm.previewDraft) ? "preview" : undefined} />}
+        actions={<InvoiceActions variant="bar" inv={{ id: inv.id, number: inv.number, status: inv.status, customerName: inv.customerName, totalAmount: a.total, balanceAmount: a.balance }} can={perm} initialDialog={sp.preview === "1" && perm.pdf ? "preview" : undefined} />}
       />
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <InvoiceStatusBadge status={inv.status} />
@@ -60,7 +62,13 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
       {inv.status === "CANCELLED" && (
         <div className="mb-5"><Notice tone="danger"><strong>Invoice dibatalkan</strong> pada {formatDateTime(inv.cancelledAt)} oleh {inv.cancelledByName}. Alasan: {inv.cancelReason}. Nomor {inv.number} tidak akan dipakai ulang.</Notice></div>
       )}
-      {isDraft && <div className="mb-5"><Notice tone="info">Ini masih <strong>draft</strong>: belum bernomor dan dapat diubah. Data pelanggan mengikuti master saat ini sampai invoice diterbitkan (setelah itu dibekukan).</Notice></div>}
+      {isDraft && inv.rejectionReason && (
+        <div className="mb-5"><Notice tone="warn"><strong>Dikembalikan oleh {inv.rejectedByName}</strong> pada {formatDateTime(inv.rejectedAt)}. Catatan: {inv.rejectionReason}</Notice></div>
+      )}
+      {isDraft && <div className="mb-5"><Notice tone="info">Ini masih <strong>draft</strong>: belum bernomor, tanpa tanda tangan &amp; cap, dan dokumennya berwatermark DRAFT. Data pelanggan mengikuti master saat ini sampai invoice diterbitkan (setelah itu dibekukan).</Notice></div>}
+      {isSubmitted && (
+        <div className="mb-5"><Notice tone="warn"><strong>Menunggu verifikasi Finance Manager</strong> — diajukan {formatDateTime(inv.submittedAt)} oleh {inv.submittedByName}. Isi dikunci selama diperiksa; dokumen tetap berwatermark DRAFT (tanpa nomor, tanda tangan, dan cap) sampai disetujui.</Notice></div>
+      )}
       {inv.isOverdue && <div className="mb-5"><Notice tone="danger">Invoice ini melewati jatuh tempo ({formatDateLong(inv.dueDate)}). Sisa tagihan {R(a.balance)}.</Notice></div>}
 
       <div className="grid gap-5 xl:grid-cols-[1fr_22rem]">
@@ -78,8 +86,9 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
               <Info label="Referensi / kontrak" value={inv.reference ?? "—"} />
               <Info label="Rekening tujuan" value={inv.bank ? `${inv.bank.label} · ${inv.bank.accountNumber} a.n. ${inv.bank.accountName}` : "—"} />
               <Info label="Dibuat oleh" value={`${inv.createdByName} · ${formatDateTime(inv.createdAt)}`} />
-              {inv.issuedAt && <Info label="Diterbitkan" value={`${formatDateTime(inv.issuedAt)} oleh ${inv.issuedByName}`} />}
-              {inv.remark && <Info label="Remark" value={inv.remark} className="sm:col-span-2" />}
+              {inv.submittedAt && <Info label="Diajukan" value={`${formatDateTime(inv.submittedAt)} oleh ${inv.submittedByName}`} />}
+              {inv.issuedAt && <Info label="Disetujui & diterbitkan" value={`${formatDateTime(inv.issuedAt)} oleh ${inv.issuedByName}`} />}
+              {inv.remark && <Info label="Remark (program)" value={inv.remark} className="sm:col-span-2" />}
               {inv.internalNote && <Info label="Catatan internal" value={inv.internalNote} className="sm:col-span-2" />}
             </dl>
           </Card>

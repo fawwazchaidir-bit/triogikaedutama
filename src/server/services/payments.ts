@@ -78,7 +78,7 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
     await lockInvoice(tx, input.invoiceId);
     const inv = await tx.invoice.findUniqueOrThrow({ where: { id: input.invoiceId } });
     if (inv.status !== "ISSUED") {
-      throw Errors.conflict(inv.status === "DRAFT" ? "Pembayaran hanya dapat dicatat pada invoice yang sudah diterbitkan." : "Invoice sudah dibatalkan; pembayaran tidak dapat dicatat.");
+      throw Errors.conflict(inv.status === "DRAFT" || inv.status === "SUBMITTED" ? "Pembayaran hanya dapat dicatat pada invoice yang sudah diterbitkan." : "Invoice sudah dibatalkan; pembayaran tidak dapat dicatat.");
     }
     const balance = Number(inv.balanceAmount);
     if (balance <= 0) throw Errors.conflict("Invoice ini sudah lunas.");

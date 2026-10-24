@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { prisma } from "@/server/db";
 import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
-import { cancelInvoice, createDraft, issueInvoice } from "@/server/services/invoices";
+import { cancelInvoice, createDraft, issueInvoice, submitInvoice } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { getDashboard } from "@/server/services/dashboard";
 import { runReport } from "@/server/services/reports";
@@ -60,6 +60,27 @@ describe("dashboard — definisi angka tidak tumpang tindih", () => {
     const row = d.trend.find((t) => t.month === thisMonth)!;
     expect(row).toMatchObject({ invoiced: 42_000_000, received: 23_000_000 });
     expect(b.amounts.paid).toBe(4_000_000);
+  });
+
+  it("invoice menunggu verifikasi tidak masuk omzet, piutang, kas, maupun laporan — hanya terhitung sebagai antrean verifikasi", async () => {
+    await mk(); // 14 jt terbit
+    const waiting = await createDraft(fx.staff, demiChefInput(fx, { invoiceDate: today, paymentTermDays: 0 }));
+    await submitInvoice(fx.staff, waiting.id);
+    await createDraft(fx.staff, demiChefInput(fx)); // draft biasa
+
+    const d = await getDashboard(fx.finance, {});
+    expect(d).toMatchObject({ issuedCount: 1, invoicedAmount: 14_000_000, monthInvoiced: 14_000_000, yearInvoiced: 14_000_000, outstandingAmount: 14_000_000, pendingCount: 1, draftCount: 1 });
+    expect(d.trend.find((t) => t.month === thisMonth)).toMatchObject({ invoiced: 14_000_000 });
+
+    const inv = await runReport(fx.finance, "invoices", {});
+    expect(inv.rows).toHaveLength(1);
+    expect(inv.totals?.total).toBe(14_000_000);
+    expect((await runReport(fx.finance, "receivables", {})).totals?.balance).toBe(14_000_000);
+    expect((await runReport(fx.finance, "by-customer", {})).totals).toMatchObject({ total: 14_000_000 });
+
+    const csv = (await exportInvoiceList(fx.finance, { status: "SUBMITTED" }, "csv")).body.toString("utf8");
+    expect(csv).toContain("Menunggu Verifikasi");
+    expect(csv).toContain("(draft)");
   });
 
   it("filter pelanggan, periode, status pembayaran, dan nomor", async () => {

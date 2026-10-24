@@ -17,8 +17,10 @@ import { calculateInvoice, CalcError, type CalcResult, type TaxRule } from "@/li
 import { computeDueDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
 import { todayIso } from "@/lib/format";
-import { cancelSchema, invoiceInputSchema, issueSchema, type InvoiceInput } from "@/lib/validation/invoice";
+import { cancelSchema, invoiceInputSchema, issueSchema, rejectSchema, type InvoiceInput } from "@/lib/validation/invoice";
 import { resolveRemark } from "@/lib/finance/remark";
+import { flattenDescription } from "@/lib/finance/description-template";
+import { renderProductDescription } from "./products";
 import type {
   InvoiceAmountsDto, InvoiceDto, InvoiceLineDto, InvoiceListItemDto, InvoiceTaxGroupDto, Paged,
 } from "@/lib/types";
@@ -105,7 +107,7 @@ async function resolveInput(tx: Tx, actor: Actor, input: InvoiceInput, existing:
     if (!canDiscount && l.discount > 0) throw Errors.forbidden("Anda tidak berwenang memberi diskon.");
     if (!canOverride) {
       // Tanpa hak override: harga & pajak harus sama dengan master (atau tidak berubah dari draft sebelumnya).
-      if (!product) throw Errors.forbidden(`${label}: baris tanpa produk hanya dapat dibuat oleh Finance/Administrator.`);
+      if (!product) throw Errors.forbidden(`${label}: baris tanpa produk hanya dapat dibuat oleh pengguna yang berhak mengubah harga.`);
       const priceOk = BigInt(l.unitPrice) === product.defaultPrice || (prev && BigInt(l.unitPrice) === prev.unitPrice);
       if (!priceOk) throw Errors.forbidden(`${label}: Anda tidak berwenang mengubah harga dari master.`);
       const taxOk = (l.taxConfigId ?? null) === (product.taxConfigId ?? null) || (prev && (l.taxConfigId ?? null) === prev.taxConfigId);
@@ -154,6 +156,8 @@ async function resolveInput(tx: Tx, actor: Actor, input: InvoiceInput, existing:
       lineNo: i + 1,
       ...(product ? { product: { connect: { id: product.id } } } : {}),
       productCode: product?.code ?? null,
+      // Teks program TETAP dari master produk (dasar Remark) — tidak dari isian pengguna.
+      programText: product ? flattenDescription(renderProductDescription(product)) : null,
       description: l.description,
       quantity: new Prisma.Decimal(cl.quantityMilli).div(1000),
       unit: l.unit,
@@ -194,6 +198,8 @@ const detailInclude = {
   createdBy: { select: { name: true } },
   issuedBy: { select: { name: true } },
   cancelledBy: { select: { name: true } },
+  submittedBy: { select: { name: true } },
+  rejectedBy: { select: { name: true } },
   replaces: { select: { id: true, number: true } },
   replacedBy: { select: { id: true, number: true, status: true } },
   duplicatedFrom: { select: { id: true, number: true } },
@@ -204,7 +210,7 @@ type InvoiceRow = Prisma.InvoiceGetPayload<{ include: typeof detailInclude }>;
 function toLineDto(it: InvoiceRow["items"][number]): InvoiceLineDto {
   const snap = (it.taxSnapshot ?? null) as { code?: string; name?: string; rateBps?: number } | null;
   return {
-    id: it.id, lineNo: it.lineNo, productId: it.productId, productCode: it.productCode, description: it.description,
+    id: it.id, lineNo: it.lineNo, productId: it.productId, productCode: it.productCode, programText: it.programText, description: it.description,
     quantity: it.quantity.toString(), unit: it.unit, unitPrice: Number(it.unitPrice), discountAmount: Number(it.discountAmount),
     grossAmount: Number(it.grossAmount), netAmount: Number(it.netAmount), taxConfigId: it.taxConfigId,
     taxCode: snap?.code ?? null, taxName: snap?.name ?? null, taxRateBps: snap?.rateBps ?? null,
@@ -212,12 +218,13 @@ function toLineDto(it: InvoiceRow["items"][number]): InvoiceLineDto {
 }
 
 export function toInvoiceDto(r: InvoiceRow, today: string): InvoiceDto {
-  const frozen = r.status !== "DRAFT" && r.customerSnapshot;
+  const preIssue = r.status === "DRAFT" || r.status === "SUBMITTED";
+  const frozen = !preIssue && r.customerSnapshot;
   const cs = (frozen ? r.customerSnapshot : customerSnap(r.customer)) as unknown as CustomerSnapshot;
   const taxGroups = ((r.taxSnapshot as { groups?: InvoiceTaxGroupDto[] } | null)?.groups ?? []) as InvoiceTaxGroupDto[];
   const total = Number(r.totalAmount);
   const paid = Number(r.paidAmount);
-  const balance = r.status === "CANCELLED" ? 0 : r.status === "DRAFT" ? total - Number(r.downPaymentAmount) : Number(r.balanceAmount);
+  const balance = r.status === "CANCELLED" ? 0 : preIssue ? total - Number(r.downPaymentAmount) : Number(r.balanceAmount);
   const amounts: InvoiceAmountsDto = {
     gross: Number(r.grossAmount), discount: Number(r.discountAmount), extraDiscount: Number(r.extraDiscountAmount),
     subtotal: Number(r.subtotalAmount), taxBase: Number(r.taxBaseAmount), tax: Number(r.taxAmount),
@@ -234,10 +241,12 @@ export function toInvoiceDto(r: InvoiceRow, today: string): InvoiceDto {
     customerId: r.customerId, customerName: r.customerNameSnapshot, customer: cs, customerFrozen: !!frozen,
     bankAccountId: r.bankAccountId,
     bank: r.bankLabel ? { label: r.bankLabel, accountNumber: r.bankAccountNumber ?? "", accountName: r.bankAccountName ?? "" }
-      : r.status === "DRAFT" && r.bankAccount ? { label: r.bankAccount.label, accountNumber: r.bankAccount.accountNumber, accountName: r.bankAccount.accountName } : null,
+      : preIssue && r.bankAccount ? { label: r.bankAccount.label, accountNumber: r.bankAccount.accountNumber, accountName: r.bankAccount.accountName } : null,
     lines: r.items.map(toLineDto), amounts, taxGroups,
     issuedAt: r.issuedAt?.toISOString() ?? null, issuedByName: r.issuedBy?.name ?? null,
     cancelledAt: r.cancelledAt?.toISOString() ?? null, cancelledByName: r.cancelledBy?.name ?? null, cancelReason: r.cancelReason,
+    submittedAt: r.submittedAt?.toISOString() ?? null, submittedByName: r.submittedBy?.name ?? null,
+    rejectionReason: r.rejectionReason, rejectedAt: r.rejectedAt?.toISOString() ?? null, rejectedByName: r.rejectedBy?.name ?? null,
     replacesInvoice: r.replaces, replacedBy: r.replacedBy, duplicatedFrom: r.duplicatedFrom,
     createdAt: r.createdAt.toISOString(), createdById: r.createdById, createdByName: r.createdBy.name,
     updatedAt: r.updatedAt.toISOString(), version: r.version,
@@ -292,6 +301,9 @@ export async function updateDraft(actor: Actor, id: string, raw: unknown): Promi
     await lockInvoice(tx, id);
     const cur = await tx.invoice.findUniqueOrThrow({ where: { id }, include: { items: { orderBy: { lineNo: "asc" } } } });
     if (!canEditDraft(actor, cur)) throw Errors.notFound("Invoice");
+    if (cur.status === "SUBMITTED") {
+      throw Errors.conflict("Invoice sedang menunggu verifikasi dan terkunci. Tarik kembali pengajuan terlebih dahulu bila perlu mengubahnya.");
+    }
     if (cur.status !== "DRAFT") {
       throw Errors.conflict(`Invoice ${cur.number ?? ""} sudah ${cur.status === "ISSUED" ? "diterbitkan" : "dibatalkan"} dan tidak dapat diedit. Batalkan lalu terbitkan ulang bila perlu.`);
     }
@@ -323,6 +335,7 @@ export async function deleteDraft(actor: Actor, id: string): Promise<void> {
     await lockInvoice(tx, id);
     const cur = await tx.invoice.findUniqueOrThrow({ where: { id }, include: { items: true } });
     if (!canEditDraft(actor, cur)) throw Errors.notFound("Invoice");
+    if (cur.status === "SUBMITTED") throw Errors.conflict("Invoice sedang menunggu verifikasi. Tarik kembali pengajuan sebelum menghapus.");
     if (cur.status !== "DRAFT") throw Errors.conflict("Hanya draft yang dapat dihapus. Invoice terbit harus dibatalkan.");
     await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
     await tx.invoice.delete({ where: { id } });
@@ -334,24 +347,153 @@ export async function deleteDraft(actor: Actor, id: string): Promise<void> {
   });
 }
 
-// ───────────────────────────── Penerbitan ─────────────────────────────
+// ───────────────────────────── Pengajuan, verifikasi, penerbitan ─────────────────────────────
+
+type StoredInvoice = Prisma.InvoiceGetPayload<{ include: { items: true; customer: true; bankAccount: true } }>;
+
+const ruleSnapshot = (r: TaxRule) => ({ code: r.code, name: r.name, rateBps: r.rateBps, dppNumerator: r.dppNumerator, dppDenominator: r.dppDenominator, method: r.method });
+
+/** Bandingkan snapshot pajak tersimpan (JSONB — urutan key tidak dijamin) dengan aturan pajak saat ini, per field. */
+function sameTaxSnapshot(stored: unknown, rule: TaxRule | null): boolean {
+  if (!rule) return stored === null || stored === undefined;
+  if (typeof stored !== "object" || stored === null) return false;
+  const a = stored as Record<string, unknown>;
+  const b = ruleSnapshot(rule);
+  return (Object.keys(b) as (keyof typeof b)[]).every((k) => a[k] === b[k]);
+}
 
 /**
- * TERBITKAN invoice. Seluruhnya dalam SATU transaksi:
+ * Hitung ulang seluruh nominal dari DATA TERSIMPAN (bukan dari input klien) dengan konfigurasi pajak AKTIF saat ini.
+ * Dipakai oleh pengajuan (validasi + pembekuan baris) dan penerbitan.
+ */
+async function evaluateStored(tx: Tx, inv: StoredInvoice, forWhat: string) {
+  const taxIds = [...new Set(inv.items.map((i) => i.taxConfigId).filter((v): v is string => !!v))];
+  const taxes = new Map((await tx.taxConfiguration.findMany({ where: { id: { in: taxIds } } })).map((t) => [t.id, t]));
+  const rules = inv.items.map((it) => {
+    if (!it.taxConfigId) return null;
+    const t = taxes.get(it.taxConfigId);
+    if (!t || !t.isActive) throw Errors.conflict(`Baris ${it.lineNo}: konfigurasi pajak tidak aktif. Perbarui draft sebelum ${forWhat}.`);
+    return toTaxRule(t);
+  });
+  let calc: CalcResult;
+  try {
+    calc = calculateInvoice({
+      lines: inv.items.map((it, i) => ({ quantity: it.quantity.toString(), unitPrice: Number(it.unitPrice), discount: Number(it.discountAmount), tax: rules[i] })),
+      extraDiscount: Number(inv.extraDiscountAmount), transport: Number(inv.transportAmount), admin: Number(inv.adminAmount), downPayment: Number(inv.downPaymentAmount),
+    });
+  } catch (e) {
+    if (e instanceof CalcError) throw Errors.validation(e.message);
+    throw e;
+  }
+  if (calc.totalAmount <= 0) throw Errors.validation(`Total invoice harus lebih dari Rp 0 untuk ${forWhat}.`);
+  return { calc, rules };
+}
+
+/** Bekukan nilai & snapshot pajak per baris (hanya boleh selagi invoice masih DRAFT — dijaga trigger). */
+async function freezeLines(tx: Tx, inv: StoredInvoice, calc: CalcResult, rules: (TaxRule | null)[]) {
+  for (const [i, it] of inv.items.entries()) {
+    const cl = calc.lines[i]!;
+    const rule = rules[i];
+    await tx.invoiceItem.update({
+      where: { id: it.id },
+      data: { grossAmount: BigInt(cl.grossAmount), netAmount: BigInt(cl.netAmount), taxSnapshot: rule ? toJson(ruleSnapshot(rule)) : Prisma.DbNull },
+    });
+  }
+}
+
+const loadStored = (tx: Tx, id: string) =>
+  tx.invoice.findUniqueOrThrow({ where: { id }, include: { items: { orderBy: { lineNo: "asc" } }, customer: true, bankAccount: true } });
+
+/**
+ * AJUKAN draft untuk diverifikasi Finance Manager. Setelah diajukan isinya TERKUNCI (aplikasi + trigger DB) —
+ * staff tidak dapat mengubah apa yang sedang diperiksa. Dokumen tetap berwatermark DRAFT, tanpa nomor/cap/tanda tangan.
+ */
+export async function submitInvoice(actor: Actor, id: string): Promise<InvoiceDto> {
+  assertCan(actor, "invoice:submit");
+  await transaction(async (tx) => {
+    await lockInvoice(tx, id);
+    const inv = await loadStored(tx, id);
+    if (!canEditDraft(actor, inv)) throw Errors.notFound("Invoice");
+    if (inv.status === "SUBMITTED") throw Errors.conflict("Invoice ini sudah diajukan dan menunggu verifikasi.");
+    if (inv.status !== "DRAFT") throw Errors.conflict(`Invoice ini sudah ${inv.status === "ISSUED" ? "diterbitkan" : "dibatalkan"}.`);
+    if (!inv.customer.isActive) throw Errors.conflict("Pelanggan sudah diarsipkan; aktifkan kembali atau ganti pelanggan.");
+
+    const { calc, rules } = await evaluateStored(tx, inv, "diajukan");
+    await freezeLines(tx, inv, calc, rules);
+    await tx.invoice.update({
+      where: { id },
+      data: {
+        status: "SUBMITTED", submittedAt: new Date(), submittedById: actor.userId,
+        rejectedAt: null, rejectedById: null, rejectionReason: null,
+        customerNameSnapshot: inv.customer.name, ...amountColumns(calc), version: { increment: 1 },
+      },
+    });
+    await writeAudit(tx, actor, {
+      action: "invoice.submit", entityType: "Invoice", entityId: id,
+      summary: `Invoice untuk ${inv.customer.name} (${formatRupiah(calc.totalAmount, "PLAIN")}) diajukan untuk verifikasi`,
+      before: { status: "DRAFT" }, after: { status: "SUBMITTED", totalAmount: calc.totalAmount },
+    });
+  });
+  return toInvoiceDto(await loadRow(prisma, id), todayIso(env().APP_TIMEZONE));
+}
+
+/** Pengaju menarik kembali pengajuannya (selama belum diverifikasi) → kembali DRAFT agar dapat diedit. */
+export async function recallInvoice(actor: Actor, id: string): Promise<InvoiceDto> {
+  assertCan(actor, "invoice:submit");
+  await transaction(async (tx) => {
+    await lockInvoice(tx, id);
+    const inv = await tx.invoice.findUniqueOrThrow({ where: { id } });
+    if (!canEditDraft(actor, inv)) throw Errors.notFound("Invoice");
+    if (inv.status !== "SUBMITTED") throw Errors.conflict("Hanya invoice yang menunggu verifikasi yang dapat ditarik kembali.");
+    await tx.invoice.update({ where: { id }, data: { status: "DRAFT", submittedAt: null, submittedById: null, version: { increment: 1 } } });
+    await writeAudit(tx, actor, {
+      action: "invoice.recall", entityType: "Invoice", entityId: id, summary: "Pengajuan ditarik kembali menjadi draft",
+      before: { status: "SUBMITTED" }, after: { status: "DRAFT" },
+    });
+  });
+  return toInvoiceDto(await loadRow(prisma, id), todayIso(env().APP_TIMEZONE));
+}
+
+/** Penyetuju (Finance Manager/Admin) mengembalikan pengajuan ke staff dengan alasan wajib. */
+export async function rejectInvoice(actor: Actor, id: string, raw: unknown): Promise<InvoiceDto> {
+  assertCan(actor, "invoice:approve");
+  const { reason } = parseInput(rejectSchema, raw);
+  await transaction(async (tx) => {
+    await lockInvoice(tx, id);
+    const inv = await tx.invoice.findUniqueOrThrow({ where: { id } });
+    if (inv.status !== "SUBMITTED") throw Errors.conflict("Hanya invoice yang menunggu verifikasi yang dapat dikembalikan.");
+    await tx.invoice.update({
+      where: { id },
+      data: { status: "DRAFT", submittedAt: null, submittedById: null, rejectedAt: new Date(), rejectedById: actor.userId, rejectionReason: reason, version: { increment: 1 } },
+    });
+    await writeAudit(tx, actor, {
+      action: "invoice.reject", entityType: "Invoice", entityId: id, summary: `Pengajuan invoice ${inv.customerNameSnapshot} dikembalikan ke staff`,
+      before: { status: "SUBMITTED" }, after: { status: "DRAFT" }, reason,
+    });
+  });
+  return toInvoiceDto(await loadRow(prisma, id), todayIso(env().APP_TIMEZONE));
+}
+
+/**
+ * SETUJUI & TERBITKAN invoice (hanya penyetuju). Dapat dari status SUBMITTED (alur normal) atau DRAFT (penyetuju
+ * menerbitkan draftnya sendiri). Seluruhnya dalam SATU transaksi:
  *   kunci baris → validasi ulang → hitung ulang di server → alokasi nomor → bekukan snapshot →
  *   (opsional) catat DP sebagai pembayaran → audit.
  * Bila satu langkah gagal, tidak ada yang tersimpan (termasuk nomor). Klik ganda/dua pengguna: yang kedua menunggu
  * kunci lalu melihat status ISSUED dan ditolak — tidak ada nomor ganda maupun penerbitan ganda.
+ * Untuk SUBMITTED, yang disetujui HARUS sama dengan yang diajukan; bila konfigurasi (mis. pajak) berubah sejak itu,
+ * penerbitan ditolak dan invoice dikembalikan ke staff untuk diajukan ulang.
  */
 export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}): Promise<InvoiceDto> {
-  assertCan(actor, "invoice:issue");
+  assertCan(actor, "invoice:approve");
   const { expectedTotalAmount } = parseInput(issueSchema, raw ?? {});
 
   await transaction(async (tx) => {
     await lockInvoice(tx, id);
-    const inv = await tx.invoice.findUniqueOrThrow({ where: { id }, include: { items: { orderBy: { lineNo: "asc" } }, customer: true, bankAccount: true } });
+    const inv = await loadStored(tx, id);
     if (inv.status === "ISSUED") throw Errors.conflict(`Invoice ini sudah diterbitkan sebagai ${inv.number}.`, { number: inv.number, alreadyIssued: true });
     if (inv.status === "CANCELLED") throw Errors.conflict("Invoice ini sudah dibatalkan.");
+    const wasStatus = inv.status;
 
     const settings = await loadSettingsRow(tx);
     if (!settings.invoiceNumberConfirmedAt) {
@@ -359,49 +501,29 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
     }
     if (!inv.customer.isActive) throw Errors.conflict("Pelanggan sudah diarsipkan; aktifkan kembali atau ganti pelanggan.");
 
-    // Pajak: pakai konfigurasi AKTIF saat ini; hitung ulang seluruh nominal dari data tersimpan.
-    const taxIds = [...new Set(inv.items.map((i) => i.taxConfigId).filter((v): v is string => !!v))];
-    const taxes = new Map((await tx.taxConfiguration.findMany({ where: { id: { in: taxIds } } })).map((t) => [t.id, t]));
-    const rules = inv.items.map((it) => {
-      if (!it.taxConfigId) return null;
-      const t = taxes.get(it.taxConfigId);
-      if (!t || !t.isActive) throw Errors.conflict(`Baris ${it.lineNo}: konfigurasi pajak tidak aktif. Perbarui draft sebelum menerbitkan.`);
-      return toTaxRule(t);
-    });
-    let calc: CalcResult;
-    try {
-      calc = calculateInvoice({
-        lines: inv.items.map((it, i) => ({ quantity: it.quantity.toString(), unitPrice: Number(it.unitPrice), discount: Number(it.discountAmount), tax: rules[i] })),
-        extraDiscount: Number(inv.extraDiscountAmount), transport: Number(inv.transportAmount), admin: Number(inv.adminAmount), downPayment: Number(inv.downPaymentAmount),
-      });
-    } catch (e) {
-      if (e instanceof CalcError) throw Errors.validation(e.message);
-      throw e;
-    }
-    if (calc.totalAmount <= 0) throw Errors.validation("Total invoice harus lebih dari Rp 0 untuk diterbitkan.");
+    const { calc, rules } = await evaluateStored(tx, inv, "diterbitkan");
     if (expectedTotalAmount !== undefined && expectedTotalAmount !== calc.totalAmount) {
       throw Errors.conflict(
         `Total berubah sejak Anda meninjau (${formatRupiah(expectedTotalAmount, "PLAIN")} → ${formatRupiah(calc.totalAmount, "PLAIN")}), mungkin karena konfigurasi pajak diperbarui. Muat ulang dan tinjau kembali.`,
       );
     }
 
+    if (wasStatus === "SUBMITTED") {
+      // Baris sudah dibekukan saat diajukan: pastikan hasil hitung sekarang IDENTIK dengan yang diajukan.
+      const same = calc.totalAmount === Number(inv.totalAmount) && inv.items.every((it, i) => {
+        return sameTaxSnapshot(it.taxSnapshot, rules[i] ?? null) && it.netAmount === BigInt(calc.lines[i]!.netAmount);
+      });
+      if (!same) {
+        throw Errors.conflict("Konfigurasi (mis. tarif pajak) berubah sejak invoice diajukan, sehingga hasil hitung berbeda. Kembalikan ke staff untuk diajukan ulang.");
+      }
+    } else {
+      // Item lebih dulu (trigger mengizinkan hanya selagi induk masih DRAFT): bekukan snapshot pajak per baris.
+      await freezeLines(tx, inv, calc, rules);
+    }
+
     const bank = inv.bankAccount?.isActive ? inv.bankAccount : await tx.bankAccount.findFirst({ where: { isActive: true, isDefault: true } });
     const invoiceDate = dateToIso(inv.invoiceDate);
     const dueDate = computeDueDate(invoiceDate, inv.paymentTermDays, inv.dueDateBasis);
-
-    // Item lebih dulu (trigger mengizinkan hanya selagi induk masih DRAFT): bekukan snapshot pajak per baris.
-    for (const [i, it] of inv.items.entries()) {
-      const cl = calc.lines[i]!;
-      const rule = rules[i];
-      await tx.invoiceItem.update({
-        where: { id: it.id },
-        data: {
-          grossAmount: BigInt(cl.grossAmount), netAmount: BigInt(cl.netAmount),
-          taxSnapshot: rule ? toJson({ code: rule.code, name: rule.name, rateBps: rule.rateBps, dppNumerator: rule.dppNumerator, dppDenominator: rule.dppDenominator, method: rule.method }) : Prisma.DbNull,
-        },
-      });
-    }
-
     const { number, scopeKey, seq } = await allocateInvoiceNumber(tx, settings, invoiceDate);
 
     const company: CompanySnapshot = {
@@ -422,7 +544,7 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
         issuedAt: new Date(), issuedById: actor.userId,
         dueDate: isoToDate(dueDate),
         ...amountColumns(calc),
-        remark: resolveRemark(inv.remark, inv.items.map((i) => i.description)),
+        remark: resolveRemark(inv.remark, inv.items.map((i) => i.programText), inv.items.map((i) => i.description)),
         customerNameSnapshot: inv.customer.name, customerSnapshot: toJson(customerSnap(inv.customer)),
         bankAccountId: bank?.id ?? null, bankLabel: bank?.label ?? null, bankAccountNumber: bank?.accountNumber ?? null, bankAccountName: bank?.accountName ?? null,
         taxSnapshot: toJson({ groups: calc.taxGroups }), companySnapshot: toJson(company), displaySnapshot: toJson(display),
@@ -443,11 +565,11 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
 
     await writeAudit(tx, actor, {
       action: "invoice.issue", entityType: "Invoice", entityId: id,
-      summary: `Invoice ${number} diterbitkan untuk ${inv.customer.name} (${formatRupiah(calc.totalAmount, "PLAIN")})`,
-      before: { status: "DRAFT", number: null },
+      summary: `Invoice ${number} ${wasStatus === "SUBMITTED" ? "disetujui dan " : ""}diterbitkan untuk ${inv.customer.name} (${formatRupiah(calc.totalAmount, "PLAIN")})`,
+      before: { status: wasStatus, number: null, submittedById: inv.submittedById },
       after: {
         status: "ISSUED", number, totalAmount: calc.totalAmount, taxAmount: calc.taxAmount, downPayment: calc.downPaymentAmount,
-        dueDate, customerName: inv.customer.name, scope: scopeKey, seq,
+        dueDate, customerName: inv.customer.name, scope: scopeKey, seq, approvedBy: actor.email,
       },
     });
   });
@@ -469,7 +591,7 @@ export async function cancelInvoice(actor: Actor, id: string, raw: unknown): Pro
     await lockInvoice(tx, id);
     const inv = await tx.invoice.findUniqueOrThrow({ where: { id }, include: { items: { orderBy: { lineNo: "asc" } } } });
     if (inv.status === "CANCELLED") throw Errors.conflict("Invoice ini sudah dibatalkan.");
-    if (inv.status === "DRAFT") throw Errors.conflict("Draft tidak dibatalkan — hapus draft bila tidak diperlukan.");
+    if (inv.status === "DRAFT" || inv.status === "SUBMITTED") throw Errors.conflict("Hanya invoice terbit yang dapat dibatalkan. Draft dihapus, pengajuan dikembalikan/ditarik.");
     if (Number(inv.paidAmount) !== 0) {
       throw Errors.conflict("Invoice ini memiliki pembayaran tercatat. Balikkan seluruh pembayaran terlebih dahulu sebelum membatalkan.");
     }
@@ -511,7 +633,7 @@ async function duplicateTx(tx: Tx, actor: Actor, src: DupSource, opts: { replace
       duplicatedFromId: src.id, replacesInvoiceId: opts.replaces ?? null,
       items: {
         create: src.items.map((i) => ({
-          lineNo: i.lineNo, productId: i.productId, productCode: i.productCode, description: i.description, quantity: i.quantity,
+          lineNo: i.lineNo, productId: i.productId, productCode: i.productCode, programText: i.programText, description: i.description, quantity: i.quantity,
           unit: i.unit, unitPrice: i.unitPrice, grossAmount: i.grossAmount, discountAmount: i.discountAmount, netAmount: i.netAmount,
           taxConfigId: i.taxConfigId, taxSnapshot: i.taxSnapshot ?? Prisma.DbNull,
         })),
@@ -544,7 +666,7 @@ export interface InvoiceListQuery {
   from?: string;
   to?: string;
   customerId?: string;
-  status?: "DRAFT" | "ISSUED" | "CANCELLED";
+  status?: "DRAFT" | "SUBMITTED" | "ISSUED" | "CANCELLED";
   /** UNPAID | PARTIALLY_PAID | PAID | OVERDUE (OVERDUE diturunkan dari jatuh tempo) */
   paymentStatus?: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "OVERDUE";
   createdById?: string;

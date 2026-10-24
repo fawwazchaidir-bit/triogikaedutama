@@ -110,7 +110,7 @@ export interface Paged<T> {
 
 // ───────────────────────────── Invoice ─────────────────────────────
 
-export type InvoiceStatusValue = "DRAFT" | "ISSUED" | "CANCELLED";
+export type InvoiceStatusValue = "DRAFT" | "SUBMITTED" | "ISSUED" | "CANCELLED";
 export type PaymentStatusValue2 = "UNPAID" | "PARTIALLY_PAID" | "PAID";
 
 export interface InvoiceLineDto {
@@ -118,6 +118,8 @@ export interface InvoiceLineDto {
   lineNo: number;
   productId: string | null;
   productCode: string | null;
+  /** Teks program tetap (dasar Remark); null untuk baris bebas */
+  programText: string | null;
   description: string;
   /** String desimal, mis. "7" atau "1.5" */
   quantity: string;
@@ -207,6 +209,12 @@ export interface InvoiceDto {
   cancelledAt: string | null;
   cancelledByName: string | null;
   cancelReason: string | null;
+  submittedAt: string | null;
+  submittedByName: string | null;
+  /** Alasan pengembalian oleh penyetuju (terisi bila draft dikembalikan) */
+  rejectionReason: string | null;
+  rejectedAt: string | null;
+  rejectedByName: string | null;
   replacesInvoice: { id: string; number: string | null } | null;
   replacedBy: { id: string; number: string | null; status: InvoiceStatusValue }[];
   duplicatedFrom: { id: string; number: string | null } | null;

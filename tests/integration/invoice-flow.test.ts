@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/db";
 import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
 import {
-  cancelInvoice, createDraft, deleteDraft, duplicateInvoice, getInvoice, issueInvoice, listInvoices, updateDraft,
+  cancelInvoice, createDraft, deleteDraft, duplicateInvoice, getInvoice, issueInvoice, listInvoices, recallInvoice, rejectInvoice, submitInvoice, updateDraft,
 } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { AppError } from "@/server/errors";
+import { ROLE_PERMISSIONS, type Permission } from "@/lib/permissions";
 
 let fx: Fixtures;
 beforeEach(async () => {
@@ -323,19 +324,36 @@ describe("duplikasi", () => {
 });
 
 describe("hak akses di service layer", () => {
-  it("STAFF: bisa buat draft; tidak bisa terbit/batal/bayar; tidak bisa ubah harga/diskon/pajak", async () => {
-    const d = await createDraft(fx.staff, demiChefInput(fx));
+  it("STAFF Operasional: input lengkap (harga, diskon, pajak, baris bebas) tetapi tidak bisa menyetujui/batal/bayar", async () => {
+    const line = demiChefInput(fx).lines[0]!;
+    const d = await createDraft(fx.staff, demiChefInput(fx, {
+      lines: [{ ...line, unitPrice: 1_500_000, discount: 100_000, taxConfigId: fx.ppnId }, { ...line, productId: null, description: "Konsultasi" }],
+      extraDiscount: 50_000,
+    }));
     expect(d.createdById).toBe(fx.staff.userId);
+    expect(d.status).toBe("DRAFT");
     await expectAppError(issueInvoice(fx.staff, d.id), "FORBIDDEN");
     const issued = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx))).id);
     await expectAppError(cancelInvoice(fx.staff, issued.id, { reason: "tidak berwenang" }), "FORBIDDEN");
     await expectAppError(recordPayment(fx.staff, { invoiceId: issued.id, paymentDate: "2026-01-14", amount: 1000, method: "Transfer" }), "FORBIDDEN");
-    const line = demiChefInput(fx).lines[0]!;
-    await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, unitPrice: 1_000_000 }] })), "FORBIDDEN", /harga/);
-    await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, discount: 1 }] })), "FORBIDDEN", /diskon/);
-    await expectAppError(createDraft(fx.staff, demiChefInput(fx, { extraDiscount: 1 })), "FORBIDDEN", /diskon/);
-    await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, taxConfigId: fx.ppnId }] })), "FORBIDDEN", /pajak/);
-    await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, productId: null }] })), "FORBIDDEN", /tanpa produk/);
+    await expectAppError(rejectInvoice(fx.staff, d.id, { reason: "bukan penyetuju" }), "FORBIDDEN");
+  });
+
+  it("pagar harga/diskon/pajak tetap berlaku bila hak override dicabut dari suatu peran (matriks dapat diubah)", async () => {
+    const perms = ROLE_PERMISSIONS.STAFF as Set<Permission>;
+    const revoked: Permission[] = ["invoice:override_price", "invoice:discount"];
+    revoked.forEach((p) => perms.delete(p));
+    try {
+      const line = demiChefInput(fx).lines[0]!;
+      await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, unitPrice: 1_000_000 }] })), "FORBIDDEN", /harga/);
+      await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, discount: 1 }] })), "FORBIDDEN", /diskon/);
+      await expectAppError(createDraft(fx.staff, demiChefInput(fx, { extraDiscount: 1 })), "FORBIDDEN", /diskon/);
+      await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, taxConfigId: fx.ppnId }] })), "FORBIDDEN", /pajak/);
+      await expectAppError(createDraft(fx.staff, demiChefInput(fx, { lines: [{ ...line, productId: null }] })), "FORBIDDEN", /tanpa produk/);
+      expect((await createDraft(fx.staff, demiChefInput(fx))).status).toBe("DRAFT"); // sesuai master → tetap boleh
+    } finally {
+      revoked.forEach((p) => perms.add(p));
+    }
   });
 
   it("STAFF hanya melihat & mengedit invoice miliknya sendiri (404, bukan 403)", async () => {
@@ -414,5 +432,202 @@ describe("draft: hapus & jejak audit", () => {
     expect((upd.after as { transport: number }).transport).toBe(1000);
     expect(logs[3]!.reason).toBe("Uji audit pembatalan");
     expect(await prisma.auditLog.count({ where: { action: "invoice.delete_draft" } })).toBe(1);
+  });
+});
+
+describe("alur persetujuan: Staff Operasional → Finance Manager", () => {
+  const staffDraft = (o: Record<string, unknown> = {}) => createDraft(fx.staff, demiChefInput(fx, o));
+
+  it("staff mengajukan → menunggu verifikasi (tanpa nomor); Finance Manager melihat lengkap lalu menyetujui → terbit", async () => {
+    const d = await staffDraft({ downPayment: 4_000_000 });
+    const sub = await submitInvoice(fx.staff, d.id);
+    expect(sub).toMatchObject({ status: "SUBMITTED", number: null, submittedByName: "Staff Uji" });
+    expect(sub.submittedAt).toBeTruthy();
+
+    // Finance Manager melihat data invoice staff secara lengkap (rincian, nilai, pelanggan, rekening)
+    const seen = await getInvoice(fx.finance, d.id);
+    expect(seen.status).toBe("SUBMITTED");
+    expect(seen.lines).toHaveLength(1);
+    expect(seen.amounts).toMatchObject({ total: 14_000_000, downPayment: 4_000_000 });
+    expect(seen.customerName).toBe("CV Bima Satria Jaya");
+    expect((await listInvoices(fx.finance, { status: "SUBMITTED" })).items.map((i) => i.id)).toEqual([d.id]);
+
+    const inv = await issueInvoice(fx.finance, d.id, { expectedTotalAmount: 14_000_000 });
+    expect(inv).toMatchObject({ status: "ISSUED", number: "00434", createdById: fx.staff.userId, submittedByName: "Staff Uji", issuedByName: "Finance Uji" });
+    expect(inv.amounts).toMatchObject({ total: 14_000_000, paid: 4_000_000, balance: 10_000_000 });
+
+    const logs = await prisma.auditLog.findMany({ where: { entityType: "Invoice", entityId: d.id }, orderBy: { id: "asc" } });
+    expect(logs.map((l) => [l.action, l.actorRole])).toEqual([["invoice.create_draft", "STAFF"], ["invoice.submit", "STAFF"], ["invoice.issue", "FINANCE"]]);
+  });
+
+  it("Administrator juga dapat menyetujui; staff tidak dapat menyetujui pengajuannya sendiri", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    await expectAppError(issueInvoice(fx.staff, d.id), "FORBIDDEN");
+    expect((await getInvoice(fx.staff, d.id)).status).toBe("SUBMITTED");
+    expect((await issueInvoice(fx.admin, d.id)).status).toBe("ISSUED");
+  });
+
+  it("selama menunggu verifikasi isi terkunci: edit, hapus, dan pengajuan ganda ditolak", async () => {
+    const d = await staffDraft();
+    const sub = await submitInvoice(fx.staff, d.id);
+    await expectAppError(updateDraft(fx.staff, d.id, demiChefInput(fx, { transport: 1, expectedVersion: sub.version })), "CONFLICT", /menunggu verifikasi/);
+    await expectAppError(deleteDraft(fx.staff, d.id), "CONFLICT", /menunggu verifikasi/);
+    await expectAppError(submitInvoice(fx.staff, d.id), "CONFLICT", /sudah diajukan/);
+    // penyetuju pun tidak bisa menyunting isi yang sedang diperiksa
+    await expectAppError(updateDraft(fx.finance, d.id, demiChefInput(fx, { transport: 1, expectedVersion: sub.version })), "CONFLICT");
+    expect((await getInvoice(fx.finance, d.id)).amounts.transport).toBe(0);
+  });
+
+  it("kunci juga ditegakkan database: SQL langsung tidak bisa mengubah isi/nilai invoice yang diajukan", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    await expect(prisma.$executeRaw`UPDATE invoices SET "totalAmount" = 1, "balanceAmount" = 1 WHERE id = ${d.id}::uuid`).rejects.toThrow(/menunggu verifikasi/);
+    await expect(prisma.$executeRaw`UPDATE invoices SET "invoiceDate" = '2030-01-01' WHERE id = ${d.id}::uuid`).rejects.toThrow(/menunggu verifikasi/);
+    await expect(prisma.$executeRaw`UPDATE invoice_items SET "unitPrice" = 1 WHERE "invoiceId" = ${d.id}::uuid`).rejects.toThrow(/DRAFT/);
+    await expect(prisma.$executeRaw`DELETE FROM invoice_items WHERE "invoiceId" = ${d.id}::uuid`).rejects.toThrow(/DRAFT/);
+    // tidak bisa melompat ke ISSUED tanpa nomor & penerbit (CHECK)
+    await expect(prisma.$executeRaw`UPDATE invoices SET status = 'ISSUED' WHERE id = ${d.id}::uuid`).rejects.toThrow();
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: d.id } })).status).toBe("SUBMITTED");
+  });
+
+  it("dikembalikan dengan alasan wajib → draft kembali ke staff, dapat diperbaiki dan diajukan ulang", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    await expectAppError(rejectInvoice(fx.finance, d.id, { reason: "x" }), "VALIDATION");
+    await expectAppError(rejectInvoice(fx.finance, d.id, {}), "VALIDATION");
+    const back = await rejectInvoice(fx.finance, d.id, { reason: "Jumlah peserta belum sesuai surat tugas" });
+    expect(back).toMatchObject({ status: "DRAFT", rejectionReason: "Jumlah peserta belum sesuai surat tugas", rejectedByName: "Finance Uji", submittedAt: null });
+    expect(back.number).toBeNull();
+
+    const fixed = await updateDraft(fx.staff, d.id, demiChefInput(fx, { lines: [{ ...demiChefInput(fx).lines[0]!, quantity: 6 }], expectedVersion: back.version }));
+    expect(fixed.amounts.total).toBe(12_000_000);
+    const again = await submitInvoice(fx.staff, d.id);
+    expect(again.status).toBe("SUBMITTED");
+    expect(again.rejectionReason).toBeNull(); // catatan lama hilang saat diajukan ulang (riwayat tetap di audit log)
+    const inv = await issueInvoice(fx.finance, d.id);
+    expect(inv.amounts.total).toBe(12_000_000);
+
+    const log = await prisma.auditLog.findFirstOrThrow({ where: { entityId: d.id, action: "invoice.reject" } });
+    expect(log.reason).toBe("Jumlah peserta belum sesuai surat tugas");
+    await expectAppError(rejectInvoice(fx.finance, d.id, { reason: "Sudah terbit, tidak bisa dikembalikan" }), "CONFLICT");
+  });
+
+  it("pengaju dapat menarik kembali selama belum diverifikasi; staff lain tidak dapat melihat/menariknya", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    await expectAppError(recallInvoice(fx.staff2, d.id), "NOT_FOUND");
+    await expectAppError(submitInvoice(fx.staff2, d.id), "NOT_FOUND");
+    await expectAppError(recallInvoice(fx.finance, d.id), "FORBIDDEN");
+    const back = await recallInvoice(fx.staff, d.id);
+    expect(back).toMatchObject({ status: "DRAFT", submittedAt: null, rejectionReason: null });
+    await expectAppError(recallInvoice(fx.staff, d.id), "CONFLICT", /menunggu verifikasi/);
+    await updateDraft(fx.staff, d.id, demiChefInput(fx, { reference: "PO-9", expectedVersion: back.version }));
+  });
+
+  it("Finance Manager tetap dapat menerbitkan draft miliknya langsung (tanpa pengajuan)", async () => {
+    const d = await createDraft(fx.finance, demiChefInput(fx));
+    expect((await issueInvoice(fx.finance, d.id)).status).toBe("ISSUED");
+    await expectAppError(submitInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx))).id), "FORBIDDEN");
+  });
+
+  it("persetujuan bersamaan: tepat satu yang berhasil, nomor tidak ganda", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    const res = await Promise.allSettled([issueInvoice(fx.finance, d.id), issueInvoice(fx.admin, d.id), issueInvoice(fx.finance, d.id)]);
+    expect(res.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await prisma.invoice.count({ where: { status: "ISSUED" } })).toBe(1);
+    expect((await prisma.invoiceNumberSequence.findUniqueOrThrow({ where: { scopeKey: "ALL" } })).nextValue).toBe(435);
+  });
+
+  it("yang disetujui harus sama dengan yang diajukan: pajak berubah setelah pengajuan → ditolak, kembalikan ke staff", async () => {
+    const line = demiChefInput(fx).lines[0]!;
+    const d = await staffDraft({ lines: [{ ...line, taxConfigId: fx.ppnId }] });
+    await submitInvoice(fx.staff, d.id);
+    await prisma.taxConfiguration.update({ where: { id: fx.ppnId }, data: { rateBps: 1200 } });
+    await expectAppError(issueInvoice(fx.finance, d.id), "CONFLICT", /berubah sejak invoice diajukan/);
+    expect((await getInvoice(fx.finance, d.id)).status).toBe("SUBMITTED");
+    expect(await prisma.invoiceNumberSequence.findUniqueOrThrow({ where: { scopeKey: "ALL" } })).toMatchObject({ nextValue: 434 }); // tidak ada nomor terpakai
+    await rejectInvoice(fx.finance, d.id, { reason: "Tarif pajak berubah, hitung ulang" });
+    await submitInvoice(fx.staff, d.id);
+    expect((await issueInvoice(fx.finance, d.id)).amounts.tax).toBeGreaterThan(0);
+  });
+
+  it("pengajuan ditolak bila pajak nonaktif atau pelanggan diarsipkan", async () => {
+    const line = demiChefInput(fx).lines[0]!;
+    const d = await staffDraft({ lines: [{ ...line, taxConfigId: fx.ppnId }] });
+    await prisma.taxConfiguration.update({ where: { id: fx.ppnId }, data: { isActive: false } });
+    await expectAppError(submitInvoice(fx.staff, d.id), "CONFLICT", /pajak tidak aktif/);
+    const d2 = await staffDraft();
+    await prisma.customer.update({ where: { id: fx.customerId }, data: { isActive: false } });
+    await expectAppError(submitInvoice(fx.staff, d2.id), "CONFLICT", /diarsipkan/);
+  });
+
+  it("pembayaran tidak bisa dicatat pada invoice yang menunggu verifikasi", async () => {
+    const d = await staffDraft();
+    await submitInvoice(fx.staff, d.id);
+    await expectAppError(recordPayment(fx.finance, { invoiceId: d.id, paymentDate: "2026-01-14", amount: 1000, method: "Transfer" }), "CONFLICT", /sudah diterbitkan/);
+  });
+
+  it("staff tidak dapat menyalin invoice milik orang lain (404, bukan 403)", async () => {
+    const inv = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx))).id);
+    const copy = await duplicateInvoice(fx.staff, inv.id).catch((e: unknown) => e);
+    // staff hanya boleh menyalin invoice miliknya sendiri → invoice Finance tidak terlihat
+    expect(copy).toBeInstanceOf(AppError);
+    expect((copy as AppError).code).toBe("NOT_FOUND");
+  });
+});
+
+describe("Remark mengikuti program (tetap); Product Description dinamis", () => {
+  const withNames = (names: string, o: Record<string, unknown> = {}) => {
+    const line = demiChefInput(fx).lines[0]!;
+    return demiChefInput(fx, {
+      lines: [{ ...line, description: `Biaya Diklat & Uji Kompetensi\nBidang Food Production\n(Skema Demi Chef)\nPeserta: ${names}` }],
+      ...o,
+    });
+  };
+  const PROGRAM = "Biaya Diklat & Uji Kompetensi Bidang Food Production (Skema Demi Chef)";
+
+  it("nama peserta pada deskripsi TIDAK ikut ke Remark; remark tetap teks program", async () => {
+    const d = await createDraft(fx.staff, withNames("Andi, Budi, Citra"));
+    expect(d.lines[0]!.description).toContain("Peserta: Andi, Budi, Citra");
+    expect(d.lines[0]!.programText).toBe(PROGRAM);
+    const inv = await issueInvoice(fx.finance, (await submitInvoice(fx.staff, d.id)).id);
+    expect(inv.remark).toBe(PROGRAM);
+    expect(inv.remark).not.toMatch(/Andi|Budi|Citra/);
+    expect(inv.lines[0]!.description).toContain("Peserta: Andi, Budi, Citra"); // deskripsi dinamis tersimpan apa adanya
+  });
+
+  it("mengubah deskripsi (menambah peserta) tidak mengubah teks program; ganti produk memperbarui program", async () => {
+    const d = await createDraft(fx.staff, withNames("Andi"));
+    const upd = await updateDraft(fx.staff, d.id, withNames("Andi, Dewi, Eko, Fajar", { expectedVersion: d.version }));
+    expect(upd.lines[0]!.programText).toBe(PROGRAM);
+    const inv = await issueInvoice(fx.finance, upd.id);
+    expect(inv.remark).toBe(PROGRAM);
+  });
+
+  it("remark manual menimpa; baris bebas tunggal memakai deskripsinya; beberapa program digabung unik", async () => {
+    const manual = await issueInvoice(fx.finance, (await createDraft(fx.finance, withNames("Andi", { remark: "Sesuai SPK 123" }))).id);
+    expect(manual.remark).toBe("Sesuai SPK 123");
+
+    const line = demiChefInput(fx).lines[0]!;
+    const free = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx, { lines: [{ ...line, productId: null, description: "Konsultasi\nHari ke-1" }] }))).id);
+    expect(free.remark).toBe("Konsultasi Hari ke-1");
+
+    const two = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx, { lines: [{ ...line, description: "A" }, { ...line, description: "B" }, { ...line, productId: null, description: "Lain" }] }))).id);
+    expect(two.remark).toBe(PROGRAM); // dua baris produk yang sama → satu teks program
+  });
+
+  it("deskripsi dinamis diterima hingga 3.000 karakter dan ditolak di atasnya", async () => {
+    const ok = await createDraft(fx.staff, withNames("x".repeat(2_900)));
+    expect(ok.lines[0]!.description.length).toBeGreaterThan(2_900);
+    await expectAppError(createDraft(fx.staff, withNames("x".repeat(3_100))), "VALIDATION");
+  });
+
+  it("duplikasi menyalin teks program sehingga remark tetap benar", async () => {
+    const inv = await issueInvoice(fx.finance, (await createDraft(fx.finance, withNames("Andi"))).id);
+    const copy = await duplicateInvoice(fx.finance, inv.id);
+    expect(copy.lines[0]!.programText).toBe(PROGRAM);
+    expect((await issueInvoice(fx.finance, copy.id)).remark).toBe(PROGRAM);
   });
 });

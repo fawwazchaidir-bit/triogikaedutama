@@ -2,16 +2,23 @@ import { can, type Role } from "./permissions";
 import type { InvoiceCan } from "@/components/invoice-actions";
 
 /** Hak aksi per invoice untuk UI (penegakan sebenarnya tetap di service layer). */
-export function invoiceCan(role: Role, userId: string, inv: { status: "DRAFT" | "ISSUED" | "CANCELLED"; createdById: string }): InvoiceCan {
+export function invoiceCan(
+  role: Role,
+  userId: string,
+  inv: { status: "DRAFT" | "SUBMITTED" | "ISSUED" | "CANCELLED"; createdById: string },
+): InvoiceCan {
   const draft = inv.status === "DRAFT";
+  const submitted = inv.status === "SUBMITTED";
   const mine = role !== "STAFF" || inv.createdById === userId;
   return {
     edit: draft && can(role, "invoice:create") && mine,
-    issue: draft && can(role, "invoice:issue"),
+    submit: draft && can(role, "invoice:submit") && mine,
+    recall: submitted && can(role, "invoice:submit") && mine,
+    approve: (draft || submitted) && can(role, "invoice:approve"),
+    reject: submitted && can(role, "invoice:approve"),
     cancel: inv.status === "ISSUED" && can(role, "invoice:cancel"),
     pay: inv.status === "ISSUED" && can(role, "payment:record"),
-    pdf: !draft && can(role, "invoice:pdf"),
-    previewDraft: draft && can(role, "invoice:preview_draft"),
+    pdf: draft || submitted ? can(role, "invoice:preview_draft") : can(role, "invoice:pdf"),
     duplicate: can(role, "invoice:create"),
     remove: draft && can(role, "invoice:create") && mine,
   };

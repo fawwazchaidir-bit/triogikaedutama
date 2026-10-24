@@ -5,7 +5,8 @@ import { isoDate, optionalText, requiredText, rupiah, uuid } from "./common";
 /** Skema input invoice — dipakai server (otoritatif) dan browser (validasi cepat). */
 export const invoiceLineSchema = z.object({
   productId: z.preprocess((v) => (v === "" ? null : v ?? null), uuid.nullable()),
-  description: requiredText(1, 600, "Deskripsi"),
+  // Dinamis: boleh memuat nama peserta, dll (mis. daftar peserta batch). Lebih panjang dari template produk.
+  description: requiredText(1, 3000, "Deskripsi"),
   /** Desimal maksimal 3 digit; string/number. Validasi mendalam ada di calculateInvoice. */
   quantity: z.union([z.string().trim().min(1, "Kuantitas wajib diisi"), z.number()]),
   unit: requiredText(1, 20, "Satuan"),
@@ -44,4 +45,8 @@ export const issueSchema = z.object({
 export const cancelSchema = z.object({
   reason: z.string().trim().min(5, "Alasan pembatalan wajib diisi (minimal 5 karakter)").max(300),
   createReplacement: z.boolean().optional(),
+});
+
+export const rejectSchema = z.object({
+  reason: z.string().trim().min(5, "Alasan pengembalian wajib diisi (minimal 5 karakter)").max(300),
 });

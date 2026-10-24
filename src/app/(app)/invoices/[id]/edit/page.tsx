@@ -26,12 +26,12 @@ export default async function EditInvoicePage({ params }: { params: Promise<{ id
   const [defaults, taxes] = await Promise.all([getInvoiceDefaults(user), listTaxConfigs(user, { activeOnly: true })]);
   return (
     <div>
-      <PageHeader title="Edit draft invoice" description={`Draft untuk ${invoice.customerName}. Nomor akan dialokasikan saat diterbitkan.`} />
+      <PageHeader title="Edit draft invoice" description={`Draft untuk ${invoice.customerName}. Nomor dialokasikan saat disetujui Finance Manager.`} />
       <InvoiceForm
         mode="edit" invoice={invoice}
         defaults={{ paymentMethod: defaults.defaultPaymentMethod, paymentTermDays: defaults.defaultPaymentTermDays, dueDateBasis: defaults.defaultDueDateBasis, today: todayIso(env().APP_TIMEZONE), banks: defaults.banks }}
         taxes={taxes}
-        perms={{ override: can(user.role, "invoice:override_price"), discount: can(user.role, "invoice:discount"), createCustomer: can(user.role, "customer:create") }}
+        perms={{ override: can(user.role, "invoice:override_price"), discount: can(user.role, "invoice:discount"), createCustomer: can(user.role, "customer:create"), submit: can(user.role, "invoice:submit") }}
       />
     </div>
   );

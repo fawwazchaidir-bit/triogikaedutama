@@ -72,7 +72,7 @@ export async function seedBase() {
         logoFileId: logoId,
         stampFileId: stampId,
         signerName: "Elva Aditya Fawwaz, S.E.",
-        signerTitle: "Finance",
+        signerTitle: "Finance Manager",
         closingText: "Sincerely,",
         defaultPaymentMethod: "Transfer",
         defaultPaymentTermDays: 4,

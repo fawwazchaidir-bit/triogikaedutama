@@ -76,7 +76,7 @@ export async function runReport(actor: Actor, type: string, raw: unknown = {}): 
         SELECT i."number", i."invoiceDate", i."customerNameSnapshot" AS customer, i."totalAmount", i."paidAmount", i."balanceAmount",
                i."dueDate", i."status", i."paymentStatus", u."name" AS creator
           FROM invoices i JOIN users u ON u."id" = i."createdById"
-         WHERE i."status" <> 'DRAFT' AND ${range} ${customer}
+         WHERE i."status" NOT IN ('DRAFT','SUBMITTED') AND ${range} ${customer}
          ORDER BY i."invoiceDate", i."numberSeq" NULLS LAST`;
       columns = [text("number", "Nomor", 14), date("invoiceDate", "Tanggal"), text("customer", "Pelanggan"), money("total", "Total Invoice"), money("paid", "Dibayar"), money("balance", "Sisa Tagihan"),
         date("dueDate", "Jatuh Tempo"), text("status", "Status Invoice", 14), text("paymentStatus", "Status Pembayaran", 18), text("creator", "Pembuat", 20)];
@@ -127,7 +127,7 @@ export async function runReport(actor: Actor, type: string, raw: unknown = {}): 
         SELECT p."paymentDate", i."number", i."customerNameSnapshot" AS customer, p."entryType", p."isDownPayment" AS dp, p."method", p."reference",
                p."amount", p."reason", u."name" AS recorder
           FROM payments p JOIN invoices i ON i."id" = p."invoiceId" JOIN users u ON u."id" = p."recordedById"
-         WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" <> 'DRAFT' ${customer}
+         WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" NOT IN ('DRAFT','SUBMITTED') ${customer}
          ORDER BY p."paymentDate", p."createdAt"`;
       columns = [date("date", "Tanggal Bayar"), text("number", "Invoice", 14), text("customer", "Pelanggan"), text("type", "Jenis", 16), text("method", "Metode", 14), text("reference", "Referensi", 22), money("amount", "Nominal"), text("note", "Keterangan", 28), text("recorder", "Dicatat Oleh", 18)];
       rows = r.map((x) => ({
@@ -186,7 +186,7 @@ export async function runReport(actor: Actor, type: string, raw: unknown = {}): 
            WHERE i."status" = 'ISSUED' AND ${range} ${customer} GROUP BY 1`,
         prisma.$queryRaw<{ m: string; amount: bigint }[]>`
           SELECT to_char(p."paymentDate",'YYYY-MM') AS m, SUM(p."amount") AS amount FROM payments p JOIN invoices i ON i."id" = p."invoiceId"
-           WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" <> 'DRAFT' ${customer} GROUP BY 1`,
+           WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" NOT IN ('DRAFT','SUBMITTED') ${customer} GROUP BY 1`,
         prisma.$queryRaw<{ m: string; cnt: number }[]>`
           SELECT to_char(i."invoiceDate",'YYYY-MM') AS m, COUNT(*)::int AS cnt FROM invoices i
            WHERE i."status" = 'CANCELLED' AND ${range} ${customer} GROUP BY 1`,
