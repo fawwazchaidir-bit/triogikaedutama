@@ -23,7 +23,8 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // "standalone" hanya untuk image Docker (NEXT_OUTPUT=standalone); `next start` biasa dipakai di VPS/CI.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   poweredByHeader: false,
   reactStrictMode: true,
   serverExternalPackages: ["@react-pdf/renderer", "@prisma/client", "exceljs"],

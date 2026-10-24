@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Download } from "lucide-react";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { REPORT_META, REPORT_TYPES, reportQuerySchema, runReport, type ReportType } from "@/server/services/reports";
 import { listCustomers } from "@/server/services/customers";
 import { Card, CardHeader, EmptyState, Notice, PageHeader } from "@/components/ui/card";
@@ -24,7 +24,7 @@ const GROUPS: { label: string; types: ReportType[] }[] = [
 ];
 
 export default async function ReportsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("report:view");
   const sp = Object.fromEntries(Object.entries(await searchParams).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]).filter(([, v]) => v)) as Record<string, string>;
   const type = ((REPORT_TYPES as readonly string[]).includes(sp.type ?? "") ? sp.type : "invoices") as ReportType;
   const parsed = reportQuerySchema.safeParse(sp);

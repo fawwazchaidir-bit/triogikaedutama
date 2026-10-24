@@ -45,8 +45,10 @@ export function InvoiceActions({ inv, can, variant = "menu", onDone, initialDial
   };
   const fail = (e: unknown) => {
     setBusy(false);
-    setError(errorMessage(e));
-    if (e instanceof ApiClientError) setFieldErrors(e.fieldErrors);
+    // Kesalahan per-field ditampilkan di bawah kolomnya; banner hanya untuk kesalahan umum (hindari pesan ganda).
+    const fe = e instanceof ApiClientError ? e.fieldErrors : {};
+    setFieldErrors(fe);
+    setError(Object.keys(fe).length ? null : errorMessage(e));
     // Konflik (mis. sudah diterbitkan di tab lain): segarkan data di belakang dialog.
     if (e instanceof ApiClientError && e.code === "CONFLICT") router.refresh();
   };

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { auditQuerySchema, listAuditLogs } from "@/server/services/audit";
 import { Card, EmptyState, Notice, PageHeader } from "@/components/ui/card";
 import { FilterBar, FilterField, filterInput } from "@/components/filter-bar";
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 const ENTITIES = ["Invoice", "Customer", "Product", "TaxConfiguration", "BankAccount", "CompanySettings", "InvoiceNumberSequence", "User", "StoredFile", "Export"];
 
 export default async function AuditLogPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("audit:view");
   const sp = Object.fromEntries(Object.entries(await searchParams).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]).filter(([, v]) => v));
   const parsed = auditQuerySchema.safeParse(sp);
   const f = parsed.success ? parsed.data : {};

@@ -1,7 +1,8 @@
 import "server-only";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { can, type Permission } from "@/lib/permissions";
 import { Errors } from "../errors";
 import { requestMeta } from "../request-context";
 import { SESSION_COOKIE_NAME, validateSession, type SessionUser } from "./session";
@@ -30,5 +31,16 @@ export async function requireApiUser(opts: { allowMustChange?: boolean } = {}): 
   if (user.mustChangePassword && !opts.allowMustChange) {
     throw Errors.forbidden("Anda harus mengganti password terlebih dahulu.");
   }
+  return user;
+}
+
+/**
+ * Untuk halaman server: pengguna harus memiliki izin tertentu, jika tidak → 404 (bukan 403/500).
+ * Halaman yang dilarang tidak membocorkan keberadaannya. Service tetap memeriksa izin sendiri (lapis kedua).
+ */
+export async function requirePagePermission(permission: Permission | Permission[]): Promise<SessionUser> {
+  const user = await requirePageUser();
+  const needed = Array.isArray(permission) ? permission : [permission];
+  if (!needed.some((p) => can(user.role, p))) notFound();
   return user;
 }

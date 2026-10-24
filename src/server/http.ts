@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { ZodError, type ZodType } from "zod";
 import { AppError, Errors } from "./errors";
+import { env } from "./env";
 import { zodFieldErrors } from "./validate";
 import { requestMeta, type RequestMeta } from "./request-context";
 import { requireApiUser } from "./auth/current";
@@ -24,7 +25,8 @@ export const created = (data: unknown) => new ApiResult(data, 201);
  */
 export function assertSameOrigin(req: Request): void {
   if (SAFE_METHODS.has(req.method)) return;
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  // X-Forwarded-Host hanya dipercaya bila aplikasi memang berada di belakang proxy tepercaya.
+  const host = (env().TRUST_PROXY ? req.headers.get("x-forwarded-host") : null) ?? req.headers.get("host");
   const origin = req.headers.get("origin");
   if (origin) {
     let originHost: string | null = null;

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getInvoiceDefaults } from "@/server/services/settings";
 import { listTaxConfigs } from "@/server/services/tax";
 import { env } from "@/server/env";
@@ -14,8 +13,7 @@ export const metadata: Metadata = { title: "Buat Invoice" };
 export const dynamic = "force-dynamic";
 
 export default async function NewInvoicePage() {
-  const user = await requirePageUser();
-  if (!can(user.role, "invoice:create")) notFound();
+  const user = await requirePagePermission("invoice:create");
   const [defaults, taxes] = await Promise.all([getInvoiceDefaults(user), listTaxConfigs(user, { activeOnly: true })]);
   return (
     <div>

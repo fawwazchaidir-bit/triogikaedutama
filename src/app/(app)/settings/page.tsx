@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getSettings, listBankAccounts } from "@/server/services/settings";
 import { getNumberingStatus } from "@/server/services/numbering";
 import { listTaxConfigs } from "@/server/services/tax";
@@ -21,8 +20,7 @@ export const metadata: Metadata = { title: "Pengaturan" };
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
-  const user = await requirePageUser();
-  if (!can(user.role, "settings:view")) notFound();
+  const user = await requirePagePermission("settings:view");
   const manage = can(user.role, "settings:manage");
   const tabs = [
     { id: "company", label: "Perusahaan & dokumen" },

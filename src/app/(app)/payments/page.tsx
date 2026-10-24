@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { z } from "zod";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { listPayments } from "@/server/services/payments";
 import { Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { FilterBar, FilterField, filterInput } from "@/components/filter-bar";
@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 const schema = z.object({ q: z.string().max(100).optional(), from: isoDate.optional(), to: isoDate.optional(), method: z.string().max(40).optional(), type: z.enum(["PAYMENT", "REVERSAL"]).optional(), page: z.coerce.number().int().min(1).optional() });
 
 export default async function PaymentsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("payment:view");
   const sp = await searchParams;
   const f = schema.safeParse(Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]).filter(([, v]) => v))).data ?? {};
   const list = await listPayments(user, { ...f, pageSize: 25 });

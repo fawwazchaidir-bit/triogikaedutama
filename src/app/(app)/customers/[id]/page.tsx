@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getCustomer } from "@/server/services/customers";
 import { listInvoices } from "@/server/services/invoices";
 import { Card, CardHeader, EmptyState, PageHeader } from "@/components/ui/card";
@@ -17,7 +17,7 @@ export const metadata: Metadata = { title: "Detail Pelanggan" };
 export const dynamic = "force-dynamic";
 
 export default async function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("customer:view");
   const id = uuid.safeParse((await params).id);
   if (!id.success) notFound();
   const c = await getCustomer(user, id.data).catch((e: unknown) => { if (e instanceof AppError && e.code === "NOT_FOUND") notFound(); throw e; });

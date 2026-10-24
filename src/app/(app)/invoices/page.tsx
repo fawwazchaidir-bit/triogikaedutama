@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, Download, Plus } from "lucide-react";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { listInvoices } from "@/server/services/invoices";
 import { invoiceListQuerySchema } from "@/server/invoice-query";
 import { listCustomers } from "@/server/services/customers";
@@ -25,7 +25,7 @@ type SP = Promise<Record<string, string | string[] | undefined>>;
 const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 export default async function InvoicesPage({ searchParams }: { searchParams: SP }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission(["invoice:view", "invoice:view_own"]);
   const sp = await searchParams;
   const raw = Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, first(v)]).filter(([, v]) => v));
   const parsed = invoiceListQuerySchema.safeParse(raw);

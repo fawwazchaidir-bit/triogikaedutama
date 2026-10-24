@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getInvoice } from "@/server/services/invoices";
 import { getInvoiceDefaults } from "@/server/services/settings";
 import { listTaxConfigs } from "@/server/services/tax";
@@ -17,7 +17,7 @@ export const metadata: Metadata = { title: "Edit Draft Invoice" };
 export const dynamic = "force-dynamic";
 
 export default async function EditInvoicePage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("invoice:create");
   const id = uuid.safeParse((await params).id);
   if (!id.success) notFound();
   const invoice = await getInvoice(user, id.data).catch((e: unknown) => { if (e instanceof AppError && e.code === "NOT_FOUND") notFound(); throw e; });

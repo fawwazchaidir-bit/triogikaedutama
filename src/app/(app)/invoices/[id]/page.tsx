@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getInvoice } from "@/server/services/invoices";
 import { listPaymentsForInvoice } from "@/server/services/payments";
 import { getInvoiceHistory } from "@/server/services/audit";
@@ -29,7 +29,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 export default async function InvoiceDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ preview?: string }> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission(["invoice:view", "invoice:view_own"]);
   const id = uuid.safeParse((await params).id);
   if (!id.success) notFound();
   const inv = await getInvoice(user, id.data).catch((e: unknown) => { if (e instanceof AppError && e.code === "NOT_FOUND") notFound(); throw e; });

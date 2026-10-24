@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { z } from "zod";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { listProducts } from "@/server/services/products";
 import { listTaxConfigs } from "@/server/services/tax";
 import { ProductsManager } from "@/components/products-manager";
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 const schema = z.object({ q: z.string().max(100).optional(), status: z.enum(["active", "archived", "all"]).optional(), page: z.coerce.number().int().min(1).optional() });
 
 export default async function ProductsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("product:view");
   const sp = await searchParams;
   const f = schema.safeParse(Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]))).data ?? {};
   const [list, taxes] = await Promise.all([listProducts(user, { ...f, pageSize: 20 }), listTaxConfigs(user, { activeOnly: true })]);

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { requirePageUser } from "@/server/auth/current";
+import { requirePagePermission } from "@/server/auth/current";
 import { getDashboard, dashboardQuerySchema } from "@/server/services/dashboard";
 import { listCustomers } from "@/server/services/customers";
 import { Card, CardHeader, Notice, PageHeader } from "@/components/ui/card";
@@ -30,7 +30,7 @@ function Tile({ label, value, hint, href, tone }: { label: string; value: string
 }
 
 export default async function DashboardPage({ searchParams }: { searchParams: SP }) {
-  const user = await requirePageUser();
+  const user = await requirePagePermission("dashboard:view");
   const sp = await searchParams;
   const raw = Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, first(v)]).filter(([, v]) => v));
   const parsed = dashboardQuerySchema.safeParse(raw);
