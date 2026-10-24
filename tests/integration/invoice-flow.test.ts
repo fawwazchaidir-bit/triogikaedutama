@@ -324,7 +324,7 @@ describe("duplikasi", () => {
 });
 
 describe("hak akses di service layer", () => {
-  it("STAFF Operasional: input lengkap + pembayaran dan pembatalan; satu-satunya yang tidak bisa: menyetujui/mengembalikan (approval)", async () => {
+  it("STAFF Operasional: input lengkap + mencatat pembayaran; approval, pembatalan invoice, dan pembalikan pembayaran tetap di tangan Finance Manager", async () => {
     const line = demiChefInput(fx).lines[0]!;
     const d = await createDraft(fx.staff, demiChefInput(fx, {
       lines: [{ ...line, unitPrice: 1_500_000, discount: 100_000, taxConfigId: fx.ppnId }, { ...line, productId: null, description: "Konsultasi" }],
@@ -337,17 +337,21 @@ describe("hak akses di service layer", () => {
     await submitInvoice(fx.staff, d.id);
     await expectAppError(issueInvoice(fx.staff, d.id), "FORBIDDEN");
     await expectAppError(rejectInvoice(fx.staff, d.id, { reason: "bukan penyetuju" }), "FORBIDDEN");
-    // setelah Finance Manager menyetujui, staff mencatat pembayaran seperti Finance
+    // setelah Finance Manager menyetujui, staff dapat mencatat pembayaran...
     const inv = await issueInvoice(fx.finance, d.id);
     const pay = await recordPayment(fx.staff, { invoiceId: inv.id, paymentDate: "2026-01-14", amount: 1_000_000, method: "Transfer", reference: "STAFF-1" });
     expect(pay.recordedByName).toBe("Staff Uji");
     expect((await getInvoice(fx.staff, inv.id)).paymentStatus).toBe("PARTIALLY_PAID");
-    await reversePayment(fx.staff, pay.id, { reason: "Salah input nominal" });
-    // staff dapat membatalkan invoice terbit (alasan wajib, tercatat) — setara Finance Manager
-    const { invoice } = await cancelInvoice(fx.staff, inv.id, { reason: "Salah pelanggan", createReplacement: false });
+    // ...tetapi koreksinya (pembalikan pembayaran, pembatalan invoice) hanya Finance Manager/Admin
+    await expectAppError(reversePayment(fx.staff, pay.id, { reason: "Salah input nominal" }), "FORBIDDEN");
+    await expectAppError(cancelInvoice(fx.staff, inv.id, { reason: "Salah pelanggan", createReplacement: false }), "FORBIDDEN");
+    expect((await getInvoice(fx.finance, inv.id)).status).toBe("ISSUED"); // tidak berubah
+    expect(await prisma.payment.count({ where: { invoiceId: inv.id } })).toBe(1);
+    await reversePayment(fx.finance, pay.id, { reason: "Salah input nominal" });
+    const { invoice } = await cancelInvoice(fx.finance, inv.id, { reason: "Salah pelanggan", createReplacement: false });
     expect(invoice.status).toBe("CANCELLED");
     const log = await prisma.auditLog.findFirstOrThrow({ where: { action: "invoice.cancel", entityId: inv.id } });
-    expect(log.actorRole).toBe("STAFF");
+    expect(log.actorRole).toBe("FINANCE");
   });
 
   it("pagar harga/diskon/pajak tetap berlaku bila hak override dicabut dari suatu peran (matriks dapat diubah)", async () => {

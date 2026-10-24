@@ -42,8 +42,7 @@ test.describe("RBAC end-to-end", () => {
     expect(issue.status()).toBe(403);
     const reject = await page.request.post(`/api/invoices/${id}/reject`, { data: { reason: "bukan penyetuju" }, headers: ORIGIN });
     expect(reject.status()).toBe(403);
-    // pembatalan kini juga hak staff (setara Finance Manager) — tetapi draft tidak dapat dibatalkan (hanya invoice terbit)
-    expect((await page.request.post(`/api/invoices/${id}/cancel`, { data: { reason: "uji draft tidak dibatalkan" }, headers: ORIGIN })).status()).toBe(409);
+    expect((await page.request.post(`/api/invoices/${id}/cancel`, { data: { reason: "bukan Finance Manager" }, headers: ORIGIN })).status()).toBe(403);
     for (const [method, url] of [["get", "/api/dashboard"], ["get", "/api/audit-logs"], ["get", "/api/users"], ["get", "/api/tax"]] as const) {
       const r = await page.request[method](url);
       expect(r.status(), url).toBe(403);

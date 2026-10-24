@@ -152,24 +152,24 @@ describe("matriks hak akses (least privilege)", () => {
   it("ADMIN memiliki seluruh izin", () => {
     for (const p of PERMISSIONS) expect(can("ADMIN", p)).toBe(true);
   });
-  it("STAFF Operasional: input lengkap, mengajukan, pembayaran, laporan; tanpa approval, dashboard, dan administrasi sistem", () => {
+  it("STAFF Operasional: input lengkap, mengajukan, mencatat pembayaran, laporan; tanpa approval, pembatalan, pembalikan pembayaran, dashboard, dan administrasi sistem", () => {
     for (const p of [
-      "invoice:approve", "dashboard:view", "audit:view",
+      "invoice:approve", "invoice:cancel", "payment:reverse", "dashboard:view", "audit:view",
       "settings:manage", "numbering:manage", "tax:manage", "user:manage", "product:manage",
     ] as const) {
       expect(can("STAFF", p), p).toBe(false);
     }
     for (const p of [
       "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit", "invoice:preview_draft",
-      "invoice:view", "invoice:pdf", "invoice:history", "invoice:cancel",
-      "payment:view", "payment:record", "payment:reverse", "report:view", "settings:view", "customer:update", "customer:archive",
+      "invoice:view", "invoice:pdf", "invoice:history",
+      "payment:view", "payment:record", "report:view", "settings:view", "customer:update", "customer:archive",
     ] as const) {
       expect(can("STAFF", p), p).toBe(true);
     }
   });
-  it("satu-satunya beda Staff Operasional dengan Finance Manager: approval (dan dashboard); staff menambah pengajuan", () => {
+  it("beda Staff Operasional dengan Finance Manager: approval, pembatalan invoice, pembalikan pembayaran, dashboard; staff menambah pengajuan", () => {
     const f = ROLE_PERMISSIONS.FINANCE, st = ROLE_PERMISSIONS.STAFF;
-    expect([...f].filter((p) => !st.has(p)).sort()).toEqual(["dashboard:view", "invoice:approve"]);
+    expect([...f].filter((p) => !st.has(p)).sort()).toEqual(["dashboard:view", "invoice:approve", "invoice:cancel", "payment:reverse"]);
     expect([...st].filter((p) => !f.has(p)).sort()).toEqual(["invoice:submit"]);
   });
   it("FINANCE Manager: memverifikasi (setujui/kembalikan) dan melihat seluruh invoice; tidak mengelola pengguna, penomoran, pajak, atau audit log", () => {

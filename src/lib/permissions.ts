@@ -7,10 +7,11 @@
  * Prinsip least privilege:
  *   ADMIN   — (pemilik) semua, termasuk pengguna, pengaturan, penomoran, pajak, audit log.
  *   FINANCE — Finance Manager: VERIFIKATOR/penyetuju invoice (setujui → terbit, kembalikan), melihat seluruh data invoice,
- *             pembatalan, pembayaran, laporan, unduh PDF.
+ *             satu-satunya yang membatalkan invoice terbit & membalikkan pembayaran, plus pembayaran, laporan, unduh PDF.
  *   STAFF   — Staff Operasional: menginput data invoice secara lengkap (termasuk harga/diskon/pajak) lalu MENGAJUKAN
- *             untuk diverifikasi; juga mencatat pembayaran, melihat laporan, dan seluruh invoice. Satu-satunya beda dengan
- *             Finance Manager: TIDAK dapat menyetujui/menerbitkan/mengembalikan invoice (dan tanpa dashboard).
+ *             untuk diverifikasi; juga mencatat pembayaran, melihat laporan, dan seluruh invoice. Beda dengan Finance
+ *             Manager: TIDAK dapat menyetujui/menerbitkan/mengembalikan, membatalkan invoice terbit, atau membalikkan
+ *             pembayaran (otoritas koreksi) — dan tanpa dashboard.
  */
 
 export type Role = "ADMIN" | "FINANCE" | "STAFF";
@@ -62,15 +63,16 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "report:view",
     "settings:view",
   ]),
-  // Staff Operasional = Finance Manager TANPA approval (setujui/terbitkan/kembalikan) dan TANPA dashboard;
-  // sebagai gantinya staff dapat mengajukan invoice untuk diverifikasi. Mengedit/menghapus/mengajukan draft
-  // tetap hanya untuk draft miliknya sendiri (lihat `canEditDraft`).
+  // Staff Operasional = Finance Manager TANPA otoritas koreksi/persetujuan — approval (setujui/terbitkan/kembalikan),
+  // pembatalan invoice terbit, dan pembalikan pembayaran tetap di tangan Finance Manager — serta TANPA dashboard;
+  // sebagai gantinya staff dapat mengajukan invoice. Mengedit/menghapus/mengajukan draft hanya untuk draft
+  // miliknya sendiri (lihat `canEditDraft`).
   STAFF: new Set<Permission>([
     "customer:view", "customer:create", "customer:update", "customer:archive",
     "product:view",
     "invoice:view", "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit",
-    "invoice:cancel", "invoice:pdf", "invoice:preview_draft", "invoice:history",
-    "payment:view", "payment:record", "payment:reverse",
+    "invoice:pdf", "invoice:preview_draft", "invoice:history",
+    "payment:view", "payment:record",
     "report:view",
     "settings:view",
   ]),

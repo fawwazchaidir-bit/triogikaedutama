@@ -294,8 +294,16 @@ test("Alur persetujuan: Staff mengajukan → Finance Manager meninjau lengkap, m
   await staff.getByLabel("Referensi transfer").fill("TRX-E2E-STAFF");
   await staff.getByRole("button", { name: "Simpan pembayaran" }).click();
   await expect(staff.getByText("Dibayar Sebagian")).toBeVisible();
+  // pembalikan pembayaran & pembatalan invoice: tombolnya tidak ada dan backend menolak (403)
+  await staff.getByRole("button", { name: "Aksi lainnya" }).click();
+  await expect(staff.getByRole("menuitem", { name: "Duplikasi" })).toBeVisible();
+  await expect(staff.getByRole("menuitem", { name: "Batalkan invoice…" })).toHaveCount(0);
+  await staff.keyboard.press("Escape");
+  await expect(staff.getByRole("button", { name: /Balikkan/ })).toHaveCount(0);
+  expect((await staff.request.post(`/api/invoices/${id}/cancel`, { data: { reason: "bukan Finance Manager" }, headers: ORIGIN })).status()).toBe(403);
   await staff.goto("/payments");
   await expect(staff.getByText("TRX-E2E-STAFF")).toBeVisible();
+  await expect(staff.getByRole("button", { name: "Balikkan" })).toHaveCount(0); // daftar pembayaran: tanpa kolom aksi pembalikan
   await staff.goto("/reports");
   await expect(staff.getByRole("heading", { name: "Laporan" })).toBeVisible();
   await staffCtx.close();
