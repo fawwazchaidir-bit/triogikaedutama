@@ -76,14 +76,18 @@ export const ROLE_LABELS: Record<Role, string> = {
   STAFF: "Staff",
 };
 
-/** Menu sidebar beserta izin minimum untuk melihatnya. */
+/** Menu sidebar beserta izin (salah satu cukup) untuk melihatnya. */
 export const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", permission: "dashboard:view" },
-  { href: "/invoices", label: "Invoice", permission: "invoice:view_own" },
-  { href: "/customers", label: "Pelanggan", permission: "customer:view" },
-  { href: "/products", label: "Produk & Layanan", permission: "product:view" },
-  { href: "/payments", label: "Pembayaran", permission: "payment:view" },
-  { href: "/reports", label: "Laporan", permission: "report:view" },
-  { href: "/audit-log", label: "Audit Log", permission: "audit:view" },
-  { href: "/settings", label: "Pengaturan", permission: "settings:view" },
-] as const satisfies readonly { href: string; label: string; permission: Permission }[];
+  { href: "/dashboard", label: "Dashboard", anyOf: ["dashboard:view"] },
+  { href: "/invoices", label: "Invoice", anyOf: ["invoice:view", "invoice:view_own"] },
+  { href: "/customers", label: "Pelanggan", anyOf: ["customer:view"] },
+  { href: "/products", label: "Produk & Layanan", anyOf: ["product:view"] },
+  { href: "/payments", label: "Pembayaran", anyOf: ["payment:view"] },
+  { href: "/reports", label: "Laporan", anyOf: ["report:view"] },
+  { href: "/audit-log", label: "Audit Log", anyOf: ["audit:view"] },
+  { href: "/settings", label: "Pengaturan", anyOf: ["settings:view"] },
+] as const satisfies readonly { href: string; label: string; anyOf: readonly Permission[] }[];
+
+export function visibleNav(role: Role | null | undefined) {
+  return NAV_ITEMS.filter((i) => (i.anyOf as readonly Permission[]).some((p) => can(role, p)));
+}

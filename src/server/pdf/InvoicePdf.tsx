@@ -1,3 +1,4 @@
+/* eslint-disable jsx-a11y/alt-text -- <Image> milik @react-pdf/renderer (bukan elemen DOM); PDF tidak memakai atribut alt */
 import { Document, Font, Image, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 
 

@@ -17,7 +17,7 @@ import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword, validatePasswordStrength } from "../src/server/auth/password";
 
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
 
 async function seedAsset(kind: "LOGO" | "STAMP", file: string, uploadedById: string): Promise<string> {
   const data = readFileSync(path.join(__dirname, "seed-assets", file));
@@ -54,7 +54,7 @@ async function ensureAdmin(): Promise<string> {
   return admin.id;
 }
 
-async function main() {
+export async function seedBase() {
   const adminId = await ensureAdmin();
 
   if (!(await prisma.companySettings.findUnique({ where: { id: 1 } }))) {
@@ -119,7 +119,10 @@ async function main() {
   }
 }
 
-main()
-  .then(() => console.log("Seed produksi selesai."))
-  .catch((e) => { console.error(`\nSeed GAGAL: ${e instanceof Error ? e.message : e}`); process.exitCode = 1; })
-  .finally(() => prisma.$disconnect());
+// Jalankan hanya bila dieksekusi langsung (`npm run db:seed`), bukan saat diimpor oleh seed-dev.
+if (require.main === module) {
+  seedBase()
+    .then(() => console.log("Seed produksi selesai."))
+    .catch((e) => { console.error(`\nSeed GAGAL: ${e instanceof Error ? e.message : e}`); process.exitCode = 1; })
+    .finally(() => prisma.$disconnect());
+}

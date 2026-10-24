@@ -14,7 +14,7 @@ import {
 } from "@/lib/finance/invoice-number";
 import { formatRupiah, formatNumberId, parseRupiahInput } from "@/lib/finance/money";
 import { formatDateLong, formatDateShort, todayIso } from "@/lib/format";
-import { can, ROLE_PERMISSIONS, PERMISSIONS } from "@/lib/permissions";
+import { can, ROLE_PERMISSIONS, PERMISSIONS, visibleNav } from "@/lib/permissions";
 
 describe("tanggal jatuh tempo", () => {
   it("contoh brief: 13 Jan 2026 + 4 hari kalender = 17 Jan 2026", () => {
@@ -171,6 +171,12 @@ describe("matriks hak akses (least privilege)", () => {
     for (const p of ["invoice:issue", "invoice:cancel", "payment:record", "invoice:pdf", "report:view"] as const) {
       expect(can("FINANCE", p), p).toBe(true);
     }
+  });
+  it("menu sidebar sesuai peran (Invoice tampil untuk ketiganya)", () => {
+    const labels = (r: "ADMIN" | "FINANCE" | "STAFF") => visibleNav(r).map((i) => i.label);
+    expect(labels("ADMIN")).toEqual(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Audit Log", "Pengaturan"]);
+    expect(labels("FINANCE")).toEqual(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Pengaturan"]);
+    expect(labels("STAFF")).toEqual(["Invoice", "Pelanggan", "Produk & Layanan"]);
   });
   it("tanpa role = tanpa izin", () => {
     expect(can(null, "dashboard:view")).toBe(false);
