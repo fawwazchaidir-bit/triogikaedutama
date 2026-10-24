@@ -1,0 +1,43 @@
+# Contoh deployment satu-server: PostgreSQL + migrasi/seed sekali jalan + aplikasi.
+# Siapkan file `.env` (lihat docs/DEPLOYMENT.md) berisi minimal:
+#   POSTGRES_PASSWORD, APP_URL (https://…), ADMIN_EMAIL, ADMIN_PASSWORD
+# Pasang reverse proxy HTTPS (Caddy/Nginx) di depan port 3000 — JANGAN mengekspos aplikasi tanpa TLS.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trilogika
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+      POSTGRES_DB: trilogika_invoice
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trilogika -d trilogika_invoice"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: { context: ., target: tools }
+    depends_on: { db: { condition: service_healthy } }
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://trilogika:${POSTGRES_PASSWORD}@db:5432/trilogika_invoice?schema=public
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?isi ADMIN_EMAIL di .env}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrator}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?isi ADMIN_PASSWORD di .env (min. 12 karakter)}
+    command: ["sh", "-c", "npm run db:migrate && npm run db:seed"]
+
+  app:
+    build: { context: ., target: runner }
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    restart: unless-stopped
+    ports: ["127.0.0.1:3000:3000"]   # hanya loopback; proxy HTTPS yang menghadap publik
+    environment:
+      DATABASE_URL: postgresql://trilogika:${POSTGRES_PASSWORD}@db:5432/trilogika_invoice?schema=public
+      APP_URL: ${APP_URL:?isi APP_URL (https://…) di .env}
+      APP_TIMEZONE: Asia/Jakarta
+      TRUST_PROXY: "true"            # aplikasi berada di belakang reverse proxy tepercaya
+volumes:
+  pgdata:

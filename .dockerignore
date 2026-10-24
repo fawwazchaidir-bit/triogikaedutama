@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.github
+.env
+.env.*
+!.env.example
+backups
+coverage
+test-results
+playwright-report
+tests/e2e/.artifacts
+*.dump
+Dockerfile
+docker-compose.yml

@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { login, logout, USERS } from "./helpers";
 import { E2E_PASSWORD } from "./global-setup";
 
+const ORIGIN = { Origin: "http://127.0.0.1:3100" };
+
 test.describe("autentikasi & keamanan HTTP", () => {
   test("anonim diarahkan ke login; kredensial salah ditolak dengan pesan generik; login & logout berfungsi", async ({ page }) => {
     for (const path of ["/dashboard", "/invoices", "/settings", "/invoices/new"]) {
@@ -40,6 +42,9 @@ test.describe("autentikasi & keamanan HTTP", () => {
     expect(cookie.httpOnly).toBe(true);
     expect(cookie.sameSite).toBe("Lax");
     expect(cookie.value.length).toBeGreaterThanOrEqual(40);
+    // halaman terautentikasi tidak boleh tersimpan di cache bersama/peramban
+    const dash = await page.goto("/dashboard");
+    expect(dash!.headers()["cache-control"]).toMatch(/no-store|no-cache|private/);
     // token tidak dapat dibaca skrip halaman
     expect(await page.evaluate(() => document.cookie)).not.toContain("tes_session");
   });
@@ -78,5 +83,38 @@ test.describe("autentikasi & keamanan HTTP", () => {
       expect(res!.status(), p).toBe(404);
       await expect(page.getByText("Halaman tidak ditemukan")).toBeVisible();
     }
+  });
+
+  test("pengguna baru wajib mengganti password sebelum memakai aplikasi (UI & API)", async ({ page, browser }) => {
+    await login(page, "admin");
+    const email = `baru.${Date.now()}@trilogika.test`;
+    const temp = "Sementara-Aman-2026!";
+    const created = await page.request.post("/api/users", { data: { email, name: "Pegawai Baru", role: "STAFF", password: temp }, headers: ORIGIN });
+    expect(created.status()).toBe(201);
+    expect((await page.request.post("/api/users", { data: { email: `lemah.${Date.now()}@trilogika.test`, name: "Lemah", role: "STAFF", password: "pendek" }, headers: ORIGIN })).status()).toBe(422);
+
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto("/login");
+    await p.getByLabel("Email").fill(email);
+    await p.getByLabel("Password").fill(temp);
+    await p.getByRole("button", { name: "Masuk" }).click();
+    await expect(p).toHaveURL(/\/change-password/);
+    expect((await p.request.get("/api/invoices")).status()).toBe(403); // API diblokir sampai password diganti
+    await p.goto("/invoices");
+    await expect(p).toHaveURL(/\/change-password/); // halaman lain mengarahkan kembali
+
+    await p.getByLabel("Password saat ini").fill(temp);
+    await p.getByLabel(/^Password baru/).fill("kopi");
+    await p.getByLabel("Ulangi password baru").fill("kopi");
+    await p.getByRole("button", { name: "Simpan" }).click();
+    await expect(p.getByText(/minimal 12 karakter/i).first()).toBeVisible(); // kebijakan password ditegakkan server
+    await p.getByLabel(/^Password baru/).fill("Kopi-Hangat-9-Pagi");
+    await p.getByLabel("Ulangi password baru").fill("Kopi-Hangat-9-Pagi");
+    await p.getByRole("button", { name: "Simpan" }).click();
+    await expect(p).not.toHaveURL(/\/change-password/);
+    await expect(p.getByRole("navigation", { name: "Menu utama" })).toBeVisible();
+    expect((await p.request.get("/api/invoices")).status()).toBe(200);
+    await ctx.close();
   });
 });

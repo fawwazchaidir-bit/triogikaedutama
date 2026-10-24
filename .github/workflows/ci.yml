@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trilogika
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: trilogika_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U trilogika" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://trilogika:ci_password@localhost:5432/trilogika_test?schema=public
+      TEST_DATABASE_URL: postgresql://trilogika:ci_password@localhost:5432/trilogika_test?schema=public
+      APP_URL: http://127.0.0.1:3100
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Dependensi sistem (pdftotext untuk uji PDF)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Unit & integration test (PostgreSQL sungguhan)
+        run: npm test
+      - name: Build produksi
+        run: npm run build
+      - name: Browser untuk E2E
+        run: npx playwright install --with-deps chromium
+      - name: E2E (build produksi + database test)
+        run: npm run test:e2e
+      - name: Audit dependensi runtime (informasi)
+        run: npm audit --omit=dev || true
