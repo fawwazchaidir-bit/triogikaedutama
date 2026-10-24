@@ -165,23 +165,28 @@ Diuji: 10 penerbitan paralel → 10 nomor berurutan; 4 permintaan terbit paralel
 
 ## 8. RBAC (least privilege) — ditegakkan di service
 
+**Prinsip:** *Staff Operasional* = *Finance Manager* **dikurangi approval dan dashboard**, ditambah hak **mengajukan** invoice. Satu-satunya hal
+yang hanya dapat dilakukan Finance Manager di alur invoice adalah **menyetujui & menerbitkan / mengembalikan** pengajuan (fitur approval).
+
 | Izin | Admin (pemilik) | Finance Manager | Staff Operasional |
 |---|:--:|:--:|:--:|
-| Dashboard, laporan, pembayaran (lihat) | ✔ | ✔ | — |
-| Lihat semua invoice / hanya miliknya | semua | **semua, data lengkap** | **milik sendiri** |
-| Buat/edit/hapus **draft**, duplikasi | ✔ | ✔ | ✔ (draft sendiri) |
+| Dashboard | ✔ | ✔ | — |
+| Lihat seluruh invoice, detail lengkap, riwayat per invoice, unduh PDF invoice terbit | ✔ | ✔ | ✔ |
+| Buat/edit/hapus **draft**, duplikasi | ✔ | ✔ | ✔ (edit/hapus/ajukan hanya draft **sendiri**) |
 | Input lengkap: harga/pajak dari master, baris tanpa produk, diskon | ✔ | ✔ | ✔ |
 | **Ajukan** untuk verifikasi / tarik kembali | ✔ | — (menerbitkan langsung) | ✔ (milik sendiri) |
-| **Setujui & terbitkan** / kembalikan ke staff | ✔ | ✔ | — |
-| Batalkan, unduh PDF invoice terbit, riwayat per invoice | ✔ | ✔ | — (hanya pratinjau PDF *draft* sendiri) |
-| Catat & balikkan pembayaran | ✔ | ✔ | — |
-| Pelanggan: lihat/tambah · ubah/arsip | ✔ | ✔ | lihat/tambah · — |
+| **Setujui & terbitkan** / kembalikan ke staff (**approval**) | ✔ | ✔ | — |
+| Batalkan invoice terbit | ✔ | ✔ | ✔ |
+| Pembayaran: lihat · catat · balikkan (+ bukti bayar) | ✔ | ✔ | ✔ |
+| Laporan (9 jenis) + ekspor CSV/XLSX | ✔ | ✔ | ✔ |
+| Pelanggan: lihat/tambah · ubah/arsip | ✔ | ✔ | ✔ |
 | Produk: lihat · kelola | ✔ | lihat · — | lihat · — |
-| Pengaturan: lihat · ubah · penomoran · pajak · pengguna | ✔ semua | lihat saja | — |
-| Audit log (lengkap) · riwayat per invoice | ✔ · ✔ | — · ✔ | — · — |
+| Pengaturan: lihat · ubah · penomoran · pajak · pengguna | ✔ semua | lihat saja | lihat saja |
+| Audit log (lengkap) | ✔ | — | — |
 
-Sumber kebenaran: `src/lib/permissions.ts` (dengan tes). Invoice milik orang lain bagi Staff → **404** (tidak membocorkan keberadaan).
-Peran Administrator tidak berubah. Label peran di UI: *Administrator*, *Finance Manager*, *Staff Operasional* (nilai internal enum tetap `ADMIN/FINANCE/STAFF`).
+Sumber kebenaran: `src/lib/permissions.ts` (dengan tes — termasuk tes yang memastikan selisih izin Staff vs Finance Manager hanya `invoice:approve` dan `dashboard:view`,
+ditambah `invoice:submit` milik staff). Label peran di UI: *Administrator*, *Finance Manager*, *Staff Operasional* (nilai internal enum tetap `ADMIN/FINANCE/STAFF`).
+Karena Pembayaran dan Laporan memuat data seluruh invoice, Staff memang melihat semua invoice; yang tetap dibatasi hanyalah **menyunting/menghapus/mengajukan draft milik orang lain** (→ 404).
 
 ## 9. Audit trail
 

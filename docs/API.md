@@ -13,7 +13,7 @@ REST JSON di bawah `/api`. Dipakai oleh UI aplikasi; dapat dipakai pihak lain **
   Pesan selalu Bahasa Indonesia dan aman ditampilkan; detail internal tidak pernah dikirim.
 - **Uang:** bilangan bulat Rupiah (`number`). **Tanggal:** `YYYY-MM-DD` (zona Asia/Jakarta). **Waktu:** ISO-8601 UTC.
 - **Paginasi:** `?page=1&pageSize=20` → `{ items, total, page, pageSize, pageCount }`.
-- **Izin:** dicek di service; tabel di bawah menyebut izin minimum. `404` dipakai (bukan `403`) untuk invoice milik orang lain bagi Staff.
+- **Izin:** dicek di service; tabel di bawah menyebut izin minimum. `404` dipakai (bukan `403`) bila Staff menyunting/menghapus/mengajukan draft milik orang lain.
 
 ## Endpoint
 

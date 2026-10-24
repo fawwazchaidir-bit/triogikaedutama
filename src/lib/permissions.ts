@@ -8,8 +8,9 @@
  *   ADMIN   — (pemilik) semua, termasuk pengguna, pengaturan, penomoran, pajak, audit log.
  *   FINANCE — Finance Manager: VERIFIKATOR/penyetuju invoice (setujui → terbit, kembalikan), melihat seluruh data invoice,
  *             pembatalan, pembayaran, laporan, unduh PDF.
- *   STAFF   — Staff Operasional: menginput data invoice secara lengkap (termasuk harga/diskon/pajak) pada invoice
- *             miliknya lalu MENGAJUKAN untuk diverifikasi. Tidak dapat menyetujui/menerbitkan.
+ *   STAFF   — Staff Operasional: menginput data invoice secara lengkap (termasuk harga/diskon/pajak) lalu MENGAJUKAN
+ *             untuk diverifikasi; juga mencatat pembayaran, melihat laporan, dan seluruh invoice. Satu-satunya beda dengan
+ *             Finance Manager: TIDAK dapat menyetujui/menerbitkan/mengembalikan invoice (dan tanpa dashboard).
  */
 
 export type Role = "ADMIN" | "FINANCE" | "STAFF";
@@ -61,10 +62,17 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "report:view",
     "settings:view",
   ]),
+  // Staff Operasional = Finance Manager TANPA approval (setujui/terbitkan/kembalikan) dan TANPA dashboard;
+  // sebagai gantinya staff dapat mengajukan invoice untuk diverifikasi. Mengedit/menghapus/mengajukan draft
+  // tetap hanya untuk draft miliknya sendiri (lihat `canEditDraft`).
   STAFF: new Set<Permission>([
-    "customer:view", "customer:create",
+    "customer:view", "customer:create", "customer:update", "customer:archive",
     "product:view",
-    "invoice:view_own", "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit", "invoice:preview_draft",
+    "invoice:view", "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit",
+    "invoice:cancel", "invoice:pdf", "invoice:preview_draft", "invoice:history",
+    "payment:view", "payment:record", "payment:reverse",
+    "report:view",
+    "settings:view",
   ]),
 };
 

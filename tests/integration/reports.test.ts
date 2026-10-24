@@ -183,7 +183,10 @@ describe("laporan", () => {
     expect(rec.rows.find((r) => r.invoiceDate === "2020-03-01")?.aging).toBe("> 90 hari");
     expect((await err(runReport(fx.finance, "invoices", { from: "2026-02-01", to: "2026-01-01" }))).code).toBe("VALIDATION");
     expect((await err(runReport(fx.finance, "tidak-ada", {}))).code).toBe("NOT_FOUND");
-    expect((await err(runReport(fx.staff, "invoices", {}))).code).toBe("FORBIDDEN");
+    // staff operasional boleh melihat laporan — hasilnya identik dengan Finance Manager
+    const asStaff = await runReport(fx.staff, "invoices", {});
+    expect(asStaff.rows.length).toBeGreaterThan(0);
+    expect(asStaff.rows).toEqual((await runReport(fx.finance, "invoices", {})).rows);
   });
 });
 
@@ -219,14 +222,14 @@ describe("ekspor CSV & Excel", () => {
     expect(ws.getRow(8).getCell(4).value).toBe(28_000_000);
   });
 
-  it("ekspor daftar invoice menghormati filter & visibilitas (staff hanya miliknya) dan tercatat di audit", async () => {
+  it("ekspor daftar invoice menghormati filter (staff melihat semua invoice, seperti Finance) dan tercatat di audit", async () => {
     await mk();
     await createDraft(fx.staff, demiChefInput(fx));
     const asFinance = await exportInvoiceList(fx.finance, {}, "csv");
     expect(asFinance.filename).toMatch(/^Laporan_Daftar_Invoice_.*\.csv$/);
     expect(asFinance.body.toString("utf8").split("\r\n").filter((l) => l.includes("CV Bima")).length).toBe(2);
     const asStaff = (await exportInvoiceList(fx.staff, {}, "csv")).body.toString("utf8");
-    expect(asStaff.split("\r\n").filter((l) => l.includes("CV Bima")).length).toBe(1);
+    expect(asStaff.split("\r\n").filter((l) => l.includes("CV Bima")).length).toBe(2);
     expect(asStaff).toContain("(draft)");
     const onlyIssued = (await exportInvoiceList(fx.finance, { status: "ISSUED" }, "csv")).body.toString("utf8");
     expect(onlyIssued).not.toContain("(draft)");
@@ -237,7 +240,7 @@ describe("ekspor CSV & Excel", () => {
 });
 
 describe("audit log", () => {
-  it("hanya Admin yang melihat audit log lengkap; Finance melihat riwayat invoice; Staff tidak", async () => {
+  it("hanya Admin yang melihat audit log lengkap; Finance Manager & Staff melihat riwayat per invoice", async () => {
     const a = await mk();
     await pay(a.id, 1_000_000);
     const all = await listAuditLogs(fx.admin, { entityType: "Invoice", entityId: a.id });
@@ -247,7 +250,7 @@ describe("audit log", () => {
     expect((await err(listAuditLogs(fx.staff, {}))).code).toBe("FORBIDDEN");
     const hist = await getInvoiceHistory(fx.finance, a.id);
     expect(hist.map((h) => h.action)).toEqual(["invoice.create_draft", "invoice.issue", "payment.record"]);
-    expect((await err(getInvoiceHistory(fx.staff, a.id))).code).toBe("FORBIDDEN");
+    expect((await getInvoiceHistory(fx.staff, a.id)).map((h) => h.action)).toEqual(hist.map((h) => h.action));
     const filtered = await listAuditLogs(fx.admin, { action: "payment.", q: "Pembayaran" });
     expect(filtered.total).toBe(1);
     expect((await err(listAuditLogs(fx.admin, { from: "bukan-tanggal" }))).code).toBe("VALIDATION");

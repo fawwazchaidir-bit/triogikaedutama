@@ -259,7 +259,7 @@ test("Alur persetujuan: Staff mengajukan → Finance Manager meninjau lengkap, m
 
   // 4) Staff melihat catatan, memperbaiki, dan mengajukan ulang
   await staff.goto(`/invoices/${id}`);
-  await expect(staff.getByText("Jumlah peserta belum sesuai surat tugas")).toBeVisible();
+  await expect(staff.getByText("Jumlah peserta belum sesuai surat tugas").first()).toBeVisible(); // catatan + riwayat (staff kini melihat riwayat)
   await staff.getByRole("link", { name: "Edit draft" }).first().click();
   await staff.getByLabel("Kuantitas baris 1").fill("2");
   await staff.getByRole("button", { name: "Simpan & ajukan verifikasi" }).click();
@@ -284,10 +284,20 @@ test("Alur persetujuan: Staff mengajukan → Finance Manager meninjau lengkap, m
   expect(officialText).not.toContain("menunggu verifikasi");
   expect(pageSizeOf(await official.body(), "official-size").landscape).toBe(true);
 
-  // 6) Staff tidak dapat melihat/mengunduh PDF resmi
-  expect((await staff.request.get(`/api/invoices/${id}/pdf`)).status()).toBe(403);
+  // 6) Staff Operasional setara Finance Manager setelah terbit: melihat PDF resmi dan mencatat pembayaran
+  expect((await staff.request.get(`/api/invoices/${id}/pdf`)).status()).toBe(200);
   await staff.goto(`/invoices/${id}`);
-  await expect(staff.getByRole("button", { name: "Preview PDF" })).toHaveCount(0);
+  await expect(staff.getByRole("button", { name: "Preview PDF" })).toBeVisible();
+  await expect(staff.getByRole("button", { name: "Setujui & terbitkan" })).toHaveCount(0); // approval tetap hanya penyetuju
+  await staff.getByRole("button", { name: "Catat pembayaran" }).click();
+  await staff.getByLabel("Nominal").fill("1000000");
+  await staff.getByLabel("Referensi transfer").fill("TRX-E2E-STAFF");
+  await staff.getByRole("button", { name: "Simpan pembayaran" }).click();
+  await expect(staff.getByText("Dibayar Sebagian")).toBeVisible();
+  await staff.goto("/payments");
+  await expect(staff.getByText("TRX-E2E-STAFF")).toBeVisible();
+  await staff.goto("/reports");
+  await expect(staff.getByRole("heading", { name: "Laporan" })).toBeVisible();
   await staffCtx.close();
   await finCtx.close();
 });

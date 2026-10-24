@@ -4,18 +4,18 @@ import { login } from "./helpers";
 const ORIGIN = { Origin: "http://127.0.0.1:3100" };
 
 test.describe("RBAC end-to-end", () => {
-  test("Staff Operasional: input lengkap + ajukan; tanpa hak menyetujui; API sensitif → 403", async ({ page }) => {
+  test("Staff Operasional: setara Finance Manager kecuali approval & dashboard; API sensitif → 403", async ({ page }) => {
     await login(page, "staff");
     const nav = page.getByRole("navigation", { name: "Menu utama" });
-    await expect(nav.getByRole("link")).toHaveText(["Invoice", "Pelanggan", "Produk & Layanan"]);
+    // Pembayaran & Laporan kini tersedia; Dashboard tetap tidak ada
+    await expect(nav.getByRole("link")).toHaveText(["Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Pengaturan"]);
 
-    // hanya invoice miliknya
+    // staff melihat seluruh invoice (draft miliknya + invoice terbit lainnya)
     await page.goto("/invoices");
     const rows = page.locator("tbody tr");
-    const seeded = rows.filter({ hasText: "Hotel Tirta Asri" });
+    const seeded = rows.filter({ hasText: "Hotel Tirta Asri" }).filter({ hasText: "DRAFT" });
     await expect(seeded).toHaveCount(1);
-    await expect(seeded).toContainText("DRAFT");
-    await expect(rows.filter({ hasText: "PT Nusantara Boga" })).toHaveCount(0); // invoice orang lain tidak terlihat
+    await expect(rows.filter({ hasText: "PT Nusantara Boga" }).first()).toBeVisible();
 
     // form: staff menginput data lengkap — harga, diskon, dan pajak dapat diisi
     await page.goto("/invoices/new");
@@ -42,17 +42,23 @@ test.describe("RBAC end-to-end", () => {
     expect(issue.status()).toBe(403);
     const reject = await page.request.post(`/api/invoices/${id}/reject`, { data: { reason: "bukan penyetuju" }, headers: ORIGIN });
     expect(reject.status()).toBe(403);
-    expect((await page.request.post(`/api/invoices/${id}/cancel`, { data: { reason: "bukan penyetuju" }, headers: ORIGIN })).status()).toBe(403);
-    for (const [method, url] of [["get", "/api/dashboard"], ["get", "/api/payments"], ["get", "/api/audit-logs"], ["get", "/api/users"], ["get", "/api/settings"], ["get", "/api/reports/invoices"], ["get", "/api/tax"]] as const) {
+    // pembatalan kini juga hak staff (setara Finance Manager) — tetapi draft tidak dapat dibatalkan (hanya invoice terbit)
+    expect((await page.request.post(`/api/invoices/${id}/cancel`, { data: { reason: "uji draft tidak dibatalkan" }, headers: ORIGIN })).status()).toBe(409);
+    for (const [method, url] of [["get", "/api/dashboard"], ["get", "/api/audit-logs"], ["get", "/api/users"], ["get", "/api/tax"]] as const) {
       const r = await page.request[method](url);
       expect(r.status(), url).toBe(403);
     }
-    expect((await page.request.post("/api/payments", { data: {}, headers: ORIGIN })).status()).toBe(403);
+    for (const url of ["/api/payments", "/api/reports/invoices", "/api/settings"]) expect((await page.request.get(url)).status(), url).toBe(200);
     expect((await page.request.patch("/api/settings", { data: { name: "HACK" }, headers: ORIGIN })).status()).toBe(403);
+    expect((await page.request.patch("/api/settings/numbering", { data: { invoiceNumberFormat: "{SEQ:9}", invoiceNumberPrefix: "", invoiceNumberReset: "NEVER", invoiceNumberStart: 1 }, headers: ORIGIN })).status()).toBe(403);
+    // halaman Pembayaran & Laporan terbuka; Dashboard 404
+    for (const p of ["/payments", "/reports"]) expect((await page.goto(p))!.status(), p).toBe(200);
+    expect((await page.goto("/dashboard"))!.status()).toBe(404);
     expect((await page.request.get(`/api/invoices/${id}/pdf?download=1`)).status()).toBe(200); // draft sendiri: pratinjau berwatermark boleh
-    // hanya invoice sendiri yang terlihat di API
-    const all = await page.request.get("/api/invoices?pageSize=5");
-    expect((await all.json()).data.items.every((i: { createdByName: string }) => i.createdByName === "Staff Demo")).toBe(true);
+    // mengedit invoice orang lain tetap ditolak (draft milik staff lain / invoice terbit)
+    const all = await page.request.get("/api/invoices?status=ISSUED&pageSize=1");
+    const someoneElse = (await all.json()).data.items[0].id as string;
+    expect([404, 409, 422]).toContain((await page.request.put(`/api/invoices/${someoneElse}`, { data: { customerId: someoneElse }, headers: ORIGIN })).status());
   });
 
   test("Finance Manager: dapat menyetujui/bayar/laporan; tidak dapat mengelola pengguna, penomoran, pajak, atau audit log", async ({ page }) => {

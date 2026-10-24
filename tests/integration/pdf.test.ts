@@ -96,7 +96,7 @@ describe("PDF invoice", () => {
     expect(t).toContain("Rp. 150.000,-");
   });
 
-  it("draft ber-watermark DRAFT tanpa nomor/tanda tangan; invoice batal ber-watermark DIBATALKAN; staff hanya pratinjau draft sendiri", async () => {
+  it("draft ber-watermark DRAFT tanpa nomor/tanda tangan; invoice batal ber-watermark DIBATALKAN; staff dapat melihat PDF invoice terbit", async () => {
     const draft = await createDraft(fx.staff, demiChefInput(fx));
     const t = pdfText((await renderInvoicePdf(fx.staff, draft.id)).buffer, "draft");
     expect(t).toContain("DRAFT");
@@ -104,10 +104,12 @@ describe("PDF invoice", () => {
     expect(t).toContain("( menunggu verifikasi )");
     expect(t).not.toContain("(Elva Aditya Fawwaz, S.E.)"); // nama penandatangan baru muncul setelah diverifikasi
     expect(t).not.toContain("00434");
-    // staff tidak boleh melihat PDF invoice terbit
+    // staff operasional setara Finance Manager untuk PDF: invoice terbit milik siapa pun dapat dibuka (versi resmi)
     const issued = await issueInvoice(fx.finance, (await createDraft(fx.staff2, demiChefInput(fx))).id);
     await expect(renderInvoicePdf(fx.staff, "00000000-0000-4000-8000-000000000000")).rejects.toBeInstanceOf(AppError);
-    await expect(renderInvoicePdf(fx.staff2, issued.id)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const official = await renderInvoicePdf(fx.staff, issued.id);
+    expect(official.doc.data).toMatchObject({ approved: true, watermark: null });
+    expect(pdfText(official.buffer, "staff-official")).toContain("00434");
     const { invoice } = await cancelInvoice(fx.finance, issued.id, { reason: "Salah pelanggan" });
     const c = pdfText((await renderInvoicePdf(fx.finance, invoice.id)).buffer, "cancelled");
     expect(c).toContain("DIBATALKAN");

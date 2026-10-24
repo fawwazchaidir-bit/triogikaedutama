@@ -152,19 +152,25 @@ describe("matriks hak akses (least privilege)", () => {
   it("ADMIN memiliki seluruh izin", () => {
     for (const p of PERMISSIONS) expect(can("ADMIN", p)).toBe(true);
   });
-  it("STAFF Operasional: input data invoice lengkap + mengajukan; tidak dapat menyetujui, membatalkan, membayar, atau mengubah konfigurasi", () => {
+  it("STAFF Operasional: input lengkap, mengajukan, pembayaran, laporan; tanpa approval, dashboard, dan administrasi sistem", () => {
     for (const p of [
-      "invoice:approve", "invoice:cancel", "invoice:pdf", "invoice:view", "invoice:history",
-      "payment:record", "payment:reverse", "payment:view", "report:view", "audit:view",
-      "settings:manage", "numbering:manage", "tax:manage", "user:manage", "product:manage", "customer:archive",
+      "invoice:approve", "dashboard:view", "audit:view",
+      "settings:manage", "numbering:manage", "tax:manage", "user:manage", "product:manage",
     ] as const) {
       expect(can("STAFF", p), p).toBe(false);
     }
     for (const p of [
-      "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit", "invoice:preview_draft", "invoice:view_own",
+      "invoice:create", "invoice:override_price", "invoice:discount", "invoice:submit", "invoice:preview_draft",
+      "invoice:view", "invoice:pdf", "invoice:history", "invoice:cancel",
+      "payment:view", "payment:record", "payment:reverse", "report:view", "settings:view", "customer:update", "customer:archive",
     ] as const) {
       expect(can("STAFF", p), p).toBe(true);
     }
+  });
+  it("satu-satunya beda Staff Operasional dengan Finance Manager: approval (dan dashboard); staff menambah pengajuan", () => {
+    const f = ROLE_PERMISSIONS.FINANCE, st = ROLE_PERMISSIONS.STAFF;
+    expect([...f].filter((p) => !st.has(p)).sort()).toEqual(["dashboard:view", "invoice:approve"]);
+    expect([...st].filter((p) => !f.has(p)).sort()).toEqual(["invoice:submit"]);
   });
   it("FINANCE Manager: memverifikasi (setujui/kembalikan) dan melihat seluruh invoice; tidak mengelola pengguna, penomoran, pajak, atau audit log", () => {
     for (const p of ["user:manage", "numbering:manage", "tax:manage", "settings:manage", "audit:view", "product:manage"] as const) {
@@ -182,11 +188,11 @@ describe("matriks hak akses (least privilege)", () => {
     expect((["ADMIN", "FINANCE", "STAFF"] as const).filter((r) => can(r, "invoice:approve"))).toEqual(["ADMIN", "FINANCE"]);
     expect(ROLE_LABELS).toEqual({ ADMIN: "Administrator", FINANCE: "Finance Manager", STAFF: "Staff Operasional" });
   });
-  it("menu sidebar sesuai peran (Invoice tampil untuk ketiganya)", () => {
+  it("menu sidebar sesuai peran (staff: tanpa Dashboard, dengan Pembayaran & Laporan)", () => {
     const labels = (r: "ADMIN" | "FINANCE" | "STAFF") => visibleNav(r).map((i) => i.label);
     expect(labels("ADMIN")).toEqual(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Audit Log", "Pengaturan"]);
     expect(labels("FINANCE")).toEqual(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Pengaturan"]);
-    expect(labels("STAFF")).toEqual(["Invoice", "Pelanggan", "Produk & Layanan"]);
+    expect(labels("STAFF")).toEqual(["Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Laporan", "Pengaturan"]);
   });
   it("tanpa role = tanpa izin", () => {
     expect(can(null, "dashboard:view")).toBe(false);

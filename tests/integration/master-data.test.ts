@@ -56,10 +56,10 @@ describe("pelanggan", () => {
     await expect(prisma.customer.create({ data: { name: "x", normalizedName: "cahaya baru", cityKey: "bantul", createdById: fx.admin.userId } })).rejects.toThrow();
   });
 
-  it("izin: staff hanya membuat; tidak mengubah/mengarsipkan", async () => {
+  it("izin: staff operasional setara Finance Manager untuk pelanggan (buat, ubah, arsip)", async () => {
     const c = await createCustomer(fx.staff, { name: "Pelanggan Dari Staff" });
-    expect((await err(updateCustomer(fx.staff, c.id, { name: "Ubah" }))).code).toBe("FORBIDDEN");
-    expect((await err(setCustomerActive(fx.staff, c.id, false))).code).toBe("FORBIDDEN");
+    expect((await updateCustomer(fx.staff, c.id, { name: "Pelanggan Diubah Staff" })).name).toBe("Pelanggan Diubah Staff");
+    expect((await setCustomerActive(fx.staff, c.id, false)).isActive).toBe(false);
     expect((await err(createCustomer(fx.finance, { name: "A" }))).code).toBe("VALIDATION"); // nama terlalu pendek
     expect((await err(createCustomer(fx.finance, { name: "Email Salah", email: "bukan-email" }))).code).toBe("VALIDATION");
   });
@@ -141,7 +141,8 @@ describe("pengaturan perusahaan & rekening", () => {
     const s = await getSettings(fx.finance);
     expect(s.name).toBe("TRILOGIKA EDUTAMA");
     expect((await err(updateCompanySettings(fx.finance, { name: "X Corp" }))).code).toBe("FORBIDDEN");
-    expect((await err(getSettings(fx.staff))).code).toBe("FORBIDDEN");
+    expect((await getSettings(fx.staff)).name).toBe("TRILOGIKA EDUTAMA"); // staff: hanya baca (setara Finance Manager)
+    expect((await err(updateCompanySettings(fx.staff, { name: "X Corp" }))).code).toBe("FORBIDDEN");
     const updated = await updateCompanySettings(fx.admin, { phone: "0811-1111-2222", defaultPaymentTermDays: 7, tagline: "" });
     expect(updated).toMatchObject({ phone: "0811-1111-2222", defaultPaymentTermDays: 7, tagline: null });
     const log = await prisma.auditLog.findFirstOrThrow({ where: { action: "settings.company_update" } });
@@ -240,12 +241,14 @@ describe("unggah file", () => {
     expect(row.sha256).toHaveLength(64);
   });
 
-  it("izin: logo/cap hanya admin; bukti bayar oleh pencatat pembayaran; staff tidak boleh keduanya", async () => {
+  it("izin: logo/cap hanya admin; bukti bayar oleh pencatat pembayaran (Finance Manager & Staff Operasional)", async () => {
     expect((await err(storeFile(fx.finance, "LOGO", { name: "l.png", bytes: PNG }))).code).toBe("FORBIDDEN");
-    expect((await err(storeFile(fx.staff, "PAYMENT_PROOF", { name: "b.pdf", bytes: PDF }))).code).toBe("FORBIDDEN");
+    expect((await err(storeFile(fx.staff, "LOGO", { name: "l.png", bytes: PNG }))).code).toBe("FORBIDDEN");
     const proof = await storeFile(fx.finance, "PAYMENT_PROOF", { name: "bukti.pdf", bytes: PDF });
     expect((await readFileForActor(fx.finance, proof.id)).mimeType).toBe("application/pdf");
-    expect((await err(readFileForActor(fx.staff, proof.id))).code).toBe("FORBIDDEN");
+    expect((await readFileForActor(fx.staff, proof.id)).mimeType).toBe("application/pdf");
+    const staffProof = await storeFile(fx.staff, "PAYMENT_PROOF", { name: "b.pdf", bytes: PDF });
+    expect((await readFileForActor(fx.finance, staffProof.id)).kind).toBe("PAYMENT_PROOF");
     const logo = await storeFile(fx.admin, "LOGO", { name: "l.png", bytes: PNG });
     expect((await readFileForActor(fx.staff, logo.id)).kind).toBe("LOGO"); // logo tampil di shell semua pengguna
     await expect(prisma.$executeRaw`UPDATE stored_files SET "originalName" = 'x'`).rejects.toThrow(/append-only/);

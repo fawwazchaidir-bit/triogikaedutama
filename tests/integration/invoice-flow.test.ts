@@ -324,7 +324,7 @@ describe("duplikasi", () => {
 });
 
 describe("hak akses di service layer", () => {
-  it("STAFF Operasional: input lengkap (harga, diskon, pajak, baris bebas) tetapi tidak bisa menyetujui/batal/bayar", async () => {
+  it("STAFF Operasional: input lengkap + pembayaran dan pembatalan; satu-satunya yang tidak bisa: menyetujui/mengembalikan (approval)", async () => {
     const line = demiChefInput(fx).lines[0]!;
     const d = await createDraft(fx.staff, demiChefInput(fx, {
       lines: [{ ...line, unitPrice: 1_500_000, discount: 100_000, taxConfigId: fx.ppnId }, { ...line, productId: null, description: "Konsultasi" }],
@@ -332,11 +332,22 @@ describe("hak akses di service layer", () => {
     }));
     expect(d.createdById).toBe(fx.staff.userId);
     expect(d.status).toBe("DRAFT");
+    // approval: hanya penyetuju
     await expectAppError(issueInvoice(fx.staff, d.id), "FORBIDDEN");
-    const issued = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx))).id);
-    await expectAppError(cancelInvoice(fx.staff, issued.id, { reason: "tidak berwenang" }), "FORBIDDEN");
-    await expectAppError(recordPayment(fx.staff, { invoiceId: issued.id, paymentDate: "2026-01-14", amount: 1000, method: "Transfer" }), "FORBIDDEN");
+    await submitInvoice(fx.staff, d.id);
+    await expectAppError(issueInvoice(fx.staff, d.id), "FORBIDDEN");
     await expectAppError(rejectInvoice(fx.staff, d.id, { reason: "bukan penyetuju" }), "FORBIDDEN");
+    // setelah Finance Manager menyetujui, staff mencatat pembayaran seperti Finance
+    const inv = await issueInvoice(fx.finance, d.id);
+    const pay = await recordPayment(fx.staff, { invoiceId: inv.id, paymentDate: "2026-01-14", amount: 1_000_000, method: "Transfer", reference: "STAFF-1" });
+    expect(pay.recordedByName).toBe("Staff Uji");
+    expect((await getInvoice(fx.staff, inv.id)).paymentStatus).toBe("PARTIALLY_PAID");
+    await reversePayment(fx.staff, pay.id, { reason: "Salah input nominal" });
+    // staff dapat membatalkan invoice terbit (alasan wajib, tercatat) — setara Finance Manager
+    const { invoice } = await cancelInvoice(fx.staff, inv.id, { reason: "Salah pelanggan", createReplacement: false });
+    expect(invoice.status).toBe("CANCELLED");
+    const log = await prisma.auditLog.findFirstOrThrow({ where: { action: "invoice.cancel", entityId: inv.id } });
+    expect(log.actorRole).toBe("STAFF");
   });
 
   it("pagar harga/diskon/pajak tetap berlaku bila hak override dicabut dari suatu peran (matriks dapat diubah)", async () => {
@@ -356,15 +367,16 @@ describe("hak akses di service layer", () => {
     }
   });
 
-  it("STAFF hanya melihat & mengedit invoice miliknya sendiri (404, bukan 403)", async () => {
+  it("STAFF melihat SEMUA invoice (pembayaran & laporan lintas invoice) tetapi hanya mengedit/menghapus/mengajukan draft miliknya sendiri", async () => {
     const mine = await createDraft(fx.staff, demiChefInput(fx));
     const theirs = await createDraft(fx.finance, demiChefInput(fx));
-    await expectAppError(getInvoice(fx.staff, theirs.id), "NOT_FOUND");
+    expect((await getInvoice(fx.staff, theirs.id)).id).toBe(theirs.id); // terlihat
+    expect((await listInvoices(fx.staff)).items.map((i) => i.id).sort()).toEqual([mine.id, theirs.id].sort());
+    await expectAppError(updateDraft(fx.staff, theirs.id, demiChefInput(fx, { expectedVersion: theirs.version })), "NOT_FOUND"); // draft orang lain: tidak dapat disunting
+    await expectAppError(deleteDraft(fx.staff, theirs.id), "NOT_FOUND");
+    await expectAppError(submitInvoice(fx.staff, theirs.id), "NOT_FOUND");
     await expectAppError(updateDraft(fx.staff2, mine.id, demiChefInput(fx)), "NOT_FOUND");
     await expectAppError(deleteDraft(fx.staff2, mine.id), "NOT_FOUND");
-    await expectAppError(duplicateInvoice(fx.staff2, mine.id), "NOT_FOUND");
-    const list = await listInvoices(fx.staff);
-    expect(list.items.map((i) => i.id)).toEqual([mine.id]);
     expect((await listInvoices(fx.finance)).total).toBe(2);
     await updateDraft(fx.staff, mine.id, demiChefInput(fx, { reference: "PO-1", expectedVersion: mine.version }));
   });
@@ -569,12 +581,10 @@ describe("alur persetujuan: Staff Operasional → Finance Manager", () => {
     await expectAppError(recordPayment(fx.finance, { invoiceId: d.id, paymentDate: "2026-01-14", amount: 1000, method: "Transfer" }), "CONFLICT", /sudah diterbitkan/);
   });
 
-  it("staff tidak dapat menyalin invoice milik orang lain (404, bukan 403)", async () => {
+  it("staff dapat menyalin invoice siapa pun menjadi draft miliknya sendiri", async () => {
     const inv = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx))).id);
-    const copy = await duplicateInvoice(fx.staff, inv.id).catch((e: unknown) => e);
-    // staff hanya boleh menyalin invoice miliknya sendiri → invoice Finance tidak terlihat
-    expect(copy).toBeInstanceOf(AppError);
-    expect((copy as AppError).code).toBe("NOT_FOUND");
+    const copy = await duplicateInvoice(fx.staff, inv.id);
+    expect(copy).toMatchObject({ status: "DRAFT", createdById: fx.staff.userId, number: null });
   });
 });
 

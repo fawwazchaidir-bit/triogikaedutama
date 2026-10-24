@@ -18,7 +18,7 @@ terbilang, PDF, pembayaran, dashboard, dan laporan.
 | **PDF** | **A4 landscape** meniru invoice referensi Trilogika (judul INVOICE di tengah, blok Number/Inv. Date/Payment Term/Due Date mepet kanan); *Product Description* dinamis (nama peserta, dll) sedangkan *Remark* tetap mengikuti program; deskripsi panjang & banyak item membungkus otomatis; header tabel berulang; **watermark DRAFT** pada dokumen yang belum diverifikasi (tanpa nomor, tanda tangan, dan cap — baru muncul setelah disetujui Finance Manager), watermark DIBATALKAN; logo, cap, tanda tangan dari Pengaturan; nama file otomatis `Invoice_00434_CV_Bima_Satria_Jaya.pdf`. |
 | **Master data** | Pelanggan (autocomplete, pencegahan duplikasi, arsip, riwayat & piutang), produk/layanan (template deskripsi otomatis), pajak, rekening bank. |
 | **Dashboard & laporan** | 10 metrik dengan definisi eksplisit (nilai invoice ≠ kas ≠ piutang), grafik tren, 9 laporan + ekspor CSV/XLSX. |
-| **Keamanan** | Login berperan (Administrator / Finance Manager / Staff Operasional, least privilege; pemisahan tugas input ↔ verifikasi) ditegakkan di backend, sesi ber-hash, scrypt, rate limit login, CSRF, header keamanan, validasi unggahan berdasarkan isi file, audit log append-only. |
+| **Keamanan** | Login berperan (Administrator / Finance Manager / Staff Operasional; Staff = Finance Manager tanpa approval & dashboard, sehingga input ↔ verifikasi terpisah) ditegakkan di backend, sesi ber-hash, scrypt, rate limit login, CSRF, header keamanan, validasi unggahan berdasarkan isi file, audit log append-only. |
 
 ## Teknologi
 

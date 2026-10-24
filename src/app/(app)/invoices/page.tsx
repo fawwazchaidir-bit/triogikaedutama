@@ -65,7 +65,7 @@ export default async function InvoicesPage({ searchParams }: { searchParams: SP 
     <div>
       <PageHeader
         title="Invoice"
-        description={user.role === "STAFF" ? "Draft dan invoice yang Anda buat." : "Cari, pantau pembayaran, dan kelola seluruh invoice."}
+        description="Cari, pantau pembayaran, dan kelola seluruh invoice."
         actions={<>
           <a href={exportHref("csv")} className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium shadow-sm hover:bg-canvas"><Download className="size-4" />CSV</a>
           <a href={exportHref("xlsx")} className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium shadow-sm hover:bg-canvas"><Download className="size-4" />Excel</a>
