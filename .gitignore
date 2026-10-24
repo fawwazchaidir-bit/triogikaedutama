@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# next.js / build
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# environment (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# runtime artefacts
+backups/
+*.dump
+*.sql.gz
+
+# test artefacts
+coverage/
+test-results/
+playwright-report/
+tests/e2e/.artifacts/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,510 @@
+// Trilogika Edutama — Invoice Management System
+//
+// Prinsip desain skema (lihat docs/ARCHITECTURE.md):
+//  * Uang = bilangan bulat Rupiah (BigInt). Tidak ada float.
+//  * Invoice menyimpan SNAPSHOT (pelanggan, perusahaan, rekening, pajak, harga) saat diterbitkan,
+//    sehingga perubahan master data tidak mengubah histori.
+//  * Tidak ada cascade delete ke data keuangan: semua relasi `Restrict`.
+//  * Trigger di migrasi `*_integrity_guards` menegakkan imutabilitas invoice terbit, ledger pembayaran,
+//    dan audit log langsung di level database (defense in depth).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum Role {
+  ADMIN
+  FINANCE
+  STAFF
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+}
+
+/// Status pembayaran yang DISIMPAN. "Overdue" tidak disimpan: diturunkan dari dueDate + sisa tagihan
+/// pada saat query agar tidak butuh cron job dan tidak pernah basi.
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+enum DueDateBasis {
+  CALENDAR_DAYS
+  BUSINESS_DAYS
+}
+
+enum TaxMethod {
+  /// Harga belum termasuk pajak; pajak ditambahkan di atas.
+  EXCLUSIVE
+  /// Harga sudah termasuk pajak; pajak diekstrak dari harga (tidak menambah total).
+  INCLUSIVE
+}
+
+enum NumberReset {
+  NEVER
+  YEARLY
+  MONTHLY
+}
+
+enum TerbilangSource {
+  TOTAL
+  BALANCE
+}
+
+enum RupiahStyle {
+  /// Rp. 14.000.000,-   (gaya dokumen referensi)
+  REFERENCE
+  /// Rp 14.000.000
+  PLAIN
+  /// Rp 14.000.000,00
+  DECIMAL
+}
+
+enum FileKind {
+  LOGO
+  STAMP
+  SIGNATURE
+  PAYMENT_PROOF
+}
+
+enum PaymentEntryType {
+  PAYMENT
+  REVERSAL
+}
+
+// ───────────────────────────── Pengguna & sesi ─────────────────────────────
+
+model User {
+  id                 String    @id @default(uuid()) @db.Uuid
+  email              String    @unique
+  name               String
+  passwordHash       String
+  role               Role
+  isActive           Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions        Session[]
+  customers       Customer[]   @relation("CustomerCreatedBy")
+  invoicesCreated Invoice[]    @relation("InvoiceCreatedBy")
+  invoicesIssued  Invoice[]    @relation("InvoiceIssuedBy")
+  invoicesCancel  Invoice[]    @relation("InvoiceCancelledBy")
+  payments        Payment[]
+  files           StoredFile[]
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  /// SHA-256 dari token acak di cookie. Token mentah tidak pernah disimpan.
+  tokenHash  String    @unique
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  ip         String?
+  userAgent  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Penghitung percobaan login (per email & per IP). Disimpan di DB agar berlaku lintas instance.
+model RateLimitBucket {
+  key          String    @id
+  count        Int       @default(0)
+  windowStart  DateTime  @default(now())
+  blockedUntil DateTime?
+
+  @@map("rate_limit_buckets")
+}
+
+// ───────────────────────────── Master data ─────────────────────────────
+
+model Customer {
+  id             String    @id @default(uuid()) @db.Uuid
+  name           String
+  /// Nama ternormalisasi (huruf kecil, tanpa badan usaha/tanda baca) untuk pencegahan duplikasi.
+  normalizedName String
+  /// Kota ternormalisasi; '' bila kosong. Bersama normalizedName membentuk identitas unik.
+  cityKey        String    @default("")
+  contactName    String?
+  contactTitle   String?
+  address        String?
+  city           String?
+  phone          String?
+  email          String?
+  npwp           String?
+  internalNote   String?
+  isActive       Boolean   @default(true)
+  archivedAt     DateTime?
+  createdById    String    @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  createdBy User      @relation("CustomerCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  invoices  Invoice[]
+
+  @@unique([normalizedName, cityKey])
+  @@index([name])
+  @@index([isActive])
+  @@map("customers")
+}
+
+model TaxConfiguration {
+  id             String    @id @default(uuid()) @db.Uuid
+  code           String    @unique
+  name           String
+  /// Tarif dalam basis point: 1100 = 11,00%.
+  rateBps        Int
+  /// Faktor DPP = dppNumerator / dppDenominator (mis. DPP Nilai Lain 11/12). Default 1/1.
+  dppNumerator   Int       @default(1)
+  dppDenominator Int       @default(1)
+  method         TaxMethod @default(EXCLUSIVE)
+  note           String?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  products Product[]
+  items    InvoiceItem[]
+
+  @@map("tax_configurations")
+}
+
+model Product {
+  id                  String    @id @default(uuid()) @db.Uuid
+  code                String    @unique
+  name                String
+  category            String?
+  fieldOfTraining     String?
+  schemeName          String?
+  /// Template deskripsi, mis. "{name}\nBidang {field}\n(Skema {scheme})".
+  descriptionTemplate String
+  unit                String    @default("Pax")
+  defaultPrice        BigInt    @default(0)
+  taxConfigId         String?   @db.Uuid
+  isActive            Boolean   @default(true)
+  archivedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  taxConfig TaxConfiguration? @relation(fields: [taxConfigId], references: [id], onDelete: Restrict)
+  items     InvoiceItem[]
+
+  @@index([name])
+  @@index([isActive])
+  @@map("products")
+}
+
+/// Satu baris (id = 1). Seluruh identitas lembaga & kebijakan dokumen ada di sini — tidak ada yang ditanam di kode.
+model CompanySettings {
+  id Int @id @default(1)
+
+  name    String
+  tagline String?
+  address String
+  phone   String?
+  email   String?
+  website String?
+  npwp    String?
+
+  logoFileId      String? @db.Uuid
+  stampFileId     String? @db.Uuid
+  signatureFileId String? @db.Uuid
+
+  signerName  String
+  signerTitle String @default("Finance")
+  closingText String @default("Sincerely,")
+
+  defaultPaymentMethod   String       @default("Transfer")
+  defaultPaymentTermDays Int          @default(4)
+  defaultDueDateBasis    DueDateBasis @default(CALENDAR_DAYS)
+  paymentNote            String?
+  footerNote             String?
+
+  // Penomoran (lihat src/lib/finance/invoice-number.ts)
+  invoiceNumberFormat        String      @default("{SEQ:5}")
+  invoiceNumberPrefix        String      @default("")
+  invoiceNumberReset         NumberReset @default(NEVER)
+  /// Nomor pertama untuk scope baru (mis. 434 pada penomoran tanpa reset, 1 pada tiap tahun baru).
+  invoiceNumberStart         Int         @default(1)
+  /// Nomor invoice TIDAK BOLEH diterbitkan sebelum Administrator mengonfirmasi nomor awal.
+  invoiceNumberConfirmedAt   DateTime?
+  invoiceNumberConfirmedById String?     @db.Uuid
+
+  // Tampilan dokumen
+  showLogo        Boolean         @default(true)
+  showStamp       Boolean         @default(false)
+  showSignature   Boolean         @default(false)
+  rupiahStyle     RupiahStyle     @default(REFERENCE)
+  terbilangSource TerbilangSource @default(TOTAL)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("company_settings")
+}
+
+model BankAccount {
+  id            String   @id @default(uuid()) @db.Uuid
+  /// Label yang dicetak pada "Transfer Via", mis. "MANDIRI-IDR".
+  label         String
+  accountNumber String
+  accountName   String
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  invoices Invoice[]
+
+  @@map("bank_accounts")
+}
+
+/// File biner (logo, cap, tanda tangan, bukti bayar). IMUTABEL: mengganti logo = unggah baris baru,
+/// sehingga invoice lama tetap menunjuk logo lamanya.
+model StoredFile {
+  id           String   @id @default(uuid()) @db.Uuid
+  kind         FileKind
+  originalName String
+  mimeType     String
+  size         Int
+  sha256       String
+  data         Bytes
+  uploadedById String   @db.Uuid
+  createdAt    DateTime @default(now())
+
+  uploadedBy User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  payments   Payment[]
+
+  @@index([kind])
+  @@map("stored_files")
+}
+
+// ───────────────────────────── Invoice ─────────────────────────────
+
+/// Penghitung nomor per "scope" (ALL / 2026 / 2026-01 sesuai kebijakan reset).
+/// Dialokasikan HANYA di dalam transaksi penerbitan dengan `UPDATE ... RETURNING` (row lock) —
+/// lihat src/server/services/numbering.ts.
+model InvoiceNumberSequence {
+  scopeKey  String   @id
+  nextValue Int
+  updatedAt DateTime @updatedAt
+
+  @@map("invoice_number_sequences")
+}
+
+model Invoice {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// NULL selama DRAFT. Dialokasikan atomik saat diterbitkan; tidak pernah dipakai ulang.
+  number      String? @unique
+  numberScope String?
+  numberSeq   Int?
+
+  status        InvoiceStatus @default(DRAFT)
+  paymentStatus PaymentStatus @default(UNPAID)
+
+  invoiceDate     DateTime     @db.Date
+  paymentMethod   String
+  paymentTermDays Int
+  dueDateBasis    DueDateBasis
+  dueDate         DateTime     @db.Date
+  /// Nomor kontrak / referensi internal.
+  reference       String?
+  /// Remark yang dicetak pada PDF.
+  remark          String?
+  internalNote    String?
+
+  customerId           String @db.Uuid
+  /// Nama pelanggan: untuk DRAFT mengikuti master saat disimpan; dibekukan saat terbit.
+  customerNameSnapshot String
+  /// {address, city, npwp, contactName, contactTitle, phone, email} dibekukan saat terbit.
+  customerSnapshot     Json?
+
+  bankAccountId     String? @db.Uuid
+  bankLabel         String?
+  bankAccountNumber String?
+  bankAccountName   String?
+
+  // ── Rincian keuangan (Rupiah bulat). Selalu dihitung ulang server dari item + konfigurasi ──
+  /// Σ qty × harga (sebelum diskon)
+  grossAmount         BigInt @default(0)
+  /// Diskon baris + diskon tambahan
+  discountAmount      BigInt @default(0)
+  /// Input pengguna: diskon tambahan tingkat invoice
+  extraDiscountAmount BigInt @default(0)
+  /// Σ nilai bersih baris (setelah diskon baris, sebelum diskon tambahan)
+  subtotalAmount      BigInt @default(0)
+  /// Dasar Pengenaan Pajak (setelah semua diskon)
+  taxBaseAmount       BigInt @default(0)
+  taxAmount           BigInt @default(0)
+  transportAmount     BigInt @default(0)
+  adminAmount         BigInt @default(0)
+  /// transport + administrasi
+  surchargeAmount     BigInt @default(0)
+  /// TOTAL INVOICE (Nett Total). DP/pembayaran TIDAK mengurangi nilai ini.
+  totalAmount         BigInt @default(0)
+  /// DP yang dinyatakan pada invoice; saat terbit otomatis dicatat sebagai baris pembayaran.
+  downPaymentAmount   BigInt @default(0)
+  /// Σ ledger pembayaran (cache, diperbarui dalam transaksi yang sama dengan pembayaran)
+  paidAmount          BigInt @default(0)
+  /// totalAmount − paidAmount
+  balanceAmount       BigInt @default(0)
+
+  /// Ringkasan pajak per konfigurasi yang dipakai saat diterbitkan.
+  taxSnapshot     Json?
+  /// Identitas lembaga + penandatangan + logo/cap yang berlaku saat terbit.
+  companySnapshot Json?
+  /// Opsi tampilan (gaya Rupiah, sumber terbilang) yang berlaku saat terbit.
+  displaySnapshot Json?
+
+  issuedAt      DateTime?
+  issuedById    String?   @db.Uuid
+  cancelledAt   DateTime?
+  cancelledById String?   @db.Uuid
+  cancelReason  String?
+
+  replacesInvoiceId String? @db.Uuid
+  duplicatedFromId  String? @db.Uuid
+
+  createdById String   @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  /// Optimistic concurrency untuk DRAFT: dua editor tidak saling menimpa diam-diam.
+  version     Int      @default(1)
+
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  bankAccount    BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  createdBy      User         @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  issuedBy       User?        @relation("InvoiceIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
+  cancelledBy    User?        @relation("InvoiceCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  replaces       Invoice?     @relation("InvoiceReplacement", fields: [replacesInvoiceId], references: [id], onDelete: Restrict)
+  replacedBy     Invoice[]    @relation("InvoiceReplacement")
+  duplicatedFrom Invoice?     @relation("InvoiceDuplicate", fields: [duplicatedFromId], references: [id], onDelete: Restrict)
+  duplicates     Invoice[]    @relation("InvoiceDuplicate")
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([status, invoiceDate])
+  @@index([customerId])
+  @@index([dueDate])
+  @@index([paymentStatus])
+  @@index([createdById])
+  @@index([invoiceDate])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id        String @id @default(uuid()) @db.Uuid
+  invoiceId String @db.Uuid
+  lineNo    Int
+
+  productId   String? @db.Uuid
+  productCode String?
+  description String
+  /// Maksimal 3 desimal (mis. 1,5 hari).
+  quantity    Decimal @db.Decimal(14, 3)
+  unit        String
+  unitPrice   BigInt
+
+  /// quantity × unitPrice (dibulatkan half-up ke Rupiah)
+  grossAmount    BigInt
+  discountAmount BigInt @default(0)
+  /// grossAmount − discountAmount
+  netAmount      BigInt
+
+  taxConfigId String? @db.Uuid
+  /// Snapshot konfigurasi pajak baris: {code, name, rateBps, dppNumerator, dppDenominator, method}
+  taxSnapshot Json?
+
+  invoice   Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  product   Product?          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  taxConfig TaxConfiguration? @relation(fields: [taxConfigId], references: [id], onDelete: Restrict)
+
+  @@unique([invoiceId, lineNo])
+  @@index([productId])
+  @@map("invoice_items")
+}
+
+// ───────────────────────────── Pembayaran (ledger append-only) ─────────────────────────────
+
+/// Baris ledger. TIDAK PERNAH di-UPDATE/DELETE (dijaga trigger). Koreksi = baris REVERSAL bernilai negatif
+/// yang menunjuk baris asal (`reversesPaymentId`, unik → satu pembayaran hanya bisa dibalik sekali).
+model Payment {
+  id                String           @id @default(uuid()) @db.Uuid
+  invoiceId         String           @db.Uuid
+  entryType         PaymentEntryType @default(PAYMENT)
+  reversesPaymentId String?          @unique @db.Uuid
+  paymentDate       DateTime         @db.Date
+  /// Positif untuk PAYMENT, negatif untuk REVERSAL.
+  amount            BigInt
+  method            String
+  reference         String?
+  note              String?
+  /// Wajib untuk REVERSAL.
+  reason            String?
+  isDownPayment     Boolean          @default(false)
+  proofFileId       String?          @db.Uuid
+  recordedById      String           @db.Uuid
+  createdAt         DateTime         @default(now())
+
+  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  recordedBy User        @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  proofFile  StoredFile? @relation(fields: [proofFileId], references: [id], onDelete: Restrict)
+  reverses   Payment?    @relation("PaymentReversal", fields: [reversesPaymentId], references: [id], onDelete: Restrict)
+  reversal   Payment?    @relation("PaymentReversal")
+
+  @@index([invoiceId])
+  @@index([paymentDate])
+  @@map("payments")
+}
+
+// ───────────────────────────── Audit ─────────────────────────────
+
+/// Append-only (dijaga trigger). Ditulis di transaksi yang sama dengan perubahan datanya.
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  actorId    String?  @db.Uuid
+  actorEmail String?
+  actorRole  Role?
+  /// mis. "invoice.issue", "payment.reverse", "customer.update"
+  action     String
+  entityType String
+  entityId   String?
+  summary    String?
+  before     Json?
+  after      Json?
+  reason     String?
+  ip         String?
+  userAgent  String?
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
+}
