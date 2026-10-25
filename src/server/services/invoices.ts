@@ -9,6 +9,7 @@ import { actorCan, assertCan, type Actor } from "../actor";
 import { writeAudit } from "../audit";
 import { dateToIso, isoToDate, toJson } from "../json";
 import { lockInvoice } from "./invoice-lock";
+import { resolvePaymentAccount } from "./cash-accounts";
 import { applyLedger } from "./payments";
 import { allocateInvoiceNumber } from "./numbering";
 import { loadSettingsRow } from "./settings";
@@ -558,6 +559,7 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
         data: {
           invoiceId: id, entryType: "PAYMENT", paymentDate: isoToDate(invoiceDate), amount: BigInt(calc.downPaymentAmount),
           method: inv.paymentMethod, reference: "Down Payment (dicatat saat penerbitan)", isDownPayment: true, recordedById: actor.userId,
+          cashAccountId: await resolvePaymentAccount(tx, inv.paymentMethod),
         },
       });
     }

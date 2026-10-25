@@ -244,6 +244,9 @@ export interface PaymentDto {
   proofFileId: string | null;
   recordedByName: string;
   createdAt: string;
+  /** Akun kas/bank penerima (null = belum dialokasikan) */
+  cashAccountId: string | null;
+  cashAccountName: string | null;
   /** Pembayaran ini sudah dibalik oleh baris REVERSAL tertentu */
   reversedByPaymentId: string | null;
   reversesPaymentId: string | null;

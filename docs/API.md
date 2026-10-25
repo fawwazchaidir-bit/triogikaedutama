@@ -32,7 +32,7 @@ REST JSON di bawah `/api`. Dipakai oleh UI aplikasi; dapat dipakai pihak lain **
 | `GET /api/invoices/:id/pdf[?download=1]` | `invoice:pdf` / `invoice:preview_draft` | PDF **A4 landscape** dari data tersimpan. Draft/menunggu verifikasi → watermark DRAFT tanpa nomor/cap/tanda tangan; unduhan tercatat di audit |
 | `GET /api/invoices/:id/history` | `invoice:history` | Riwayat audit invoice |
 | `GET /api/invoices/export?format=csv\|xlsx&…filter` | lihat | Ekspor sesuai filter daftar |
-| `GET/POST /api/payments` · `POST /api/payments/:id/reverse` · `POST /api/payments/proof` | `payment:view` · `payment:record` · `payment:reverse` | Ledger; catat; pembalikan (`{reason}`); unggah bukti (multipart) |
+| `GET/POST /api/payments` · `POST /api/payments/:id/reverse` · `POST /api/payments/proof` | `payment:view` · `payment:record` · `payment:reverse` | Ledger; catat (`cashAccountId` opsional — default menurut metode); pembalikan (`{reason}`); unggah bukti (multipart) |
 | `GET/POST /api/customers` · `GET/PUT/PATCH /api/customers/:id` · `GET /api/customers/search?q=` | `customer:*` | Master pelanggan (`PATCH {isActive}` = arsip/aktifkan); `409 needsConfirmation` untuk kemiripan |
 | `GET/POST /api/products` · `PUT /api/products/:id` · `GET /api/products/search?q=` | `product:*` | Master produk |
 | `GET/POST /api/tax` · `PATCH /api/tax/:id` | `tax:manage` (`?activeOnly=true` untuk pembuat invoice) | Konfigurasi pajak |
@@ -43,6 +43,13 @@ REST JSON di bawah `/api`. Dipakai oleh UI aplikasi; dapat dipakai pihak lain **
 | `GET /api/dashboard?from&to&customerId&status&paymentStatus&q` | `dashboard:view` | Metrik & tren |
 | `GET /api/reports/:type?format=json\|csv\|xlsx&from&to&customerId` | `report:view` | `invoices by-customer by-product payments receivables overdue paid cancelled monthly` |
 | `GET /api/audit-logs?q&action&entityType&entityId&from&to&page` | `audit:view` | Audit log |
+| `GET/POST /api/finance/entries` · `DELETE …/:id` · `POST …/:id/approve\|reject\|reverse` | `expense:record` · `expense:view_own`/`finance:view` · `expense:approve` · `expense:void` | Entri kas manual (pengeluaran: staff → `PENDING`); `DELETE` hanya pengajuan sendiri yang menunggu; `reject`/`reverse` butuh `{ reason }` |
+| `GET/POST /api/finance/transfers` · `POST …/:id/reverse` | `finance:view` · `cash:record` · `expense:void` | Transfer antar akun kas/bank |
+| `GET/POST /api/finance/cash-accounts` · `PATCH …/:id` · `GET …/options` | `finance:view` · `finance:manage` · (opsi: pencatat) | Akun kas/bank + saldo awal; `options` = pilihan aktif tanpa saldo |
+| `GET/POST /api/finance/coa` · `PATCH …/:id` | `finance:view`/`expense:record` · `finance:manage` | Bagan akun (staff hanya melihat kategori beban yang boleh dipilih) |
+| `GET /api/finance/ledger?accountId&from&to` | `finance:view` | Buku kas satu akun dengan saldo berjalan |
+| `GET /api/finance/statements/:type?format=json\|csv\|xlsx&from&to` | `finance:view` | `cash-flow`, `income-statement` (basis kas); ekspor dicatat di audit |
+| `POST /api/finance/proof` | `expense:record` | Unggah bukti pengeluaran (PNG/JPEG/PDF) |
 | `GET /api/files/:id` | tergantung jenis | Logo/cap/tanda tangan/bukti bayar (diunduh, bukan dirender inline) |
 
 ## Contoh (dari browser pada origin yang sama)

@@ -1,10 +1,12 @@
 import { prisma } from "@/server/db";
 import type { Actor } from "@/server/actor";
 import { hashPassword } from "@/server/auth/password";
+import { seedCoa } from "@/server/services/finance-coa";
 
 /** Seluruh tabel aplikasi (TRUNCATE tidak memicu trigger baris, sehingga aman untuk reset test). */
 const TABLES = [
-  "audit_logs", "payments", "invoice_items", "invoices", "invoice_number_sequences", "products", "tax_configurations",
+  "audit_logs", "payments", "cash_entries", "cash_transfers", "cash_accounts", "coa_accounts",
+  "invoice_items", "invoices", "invoice_number_sequences", "products", "tax_configurations",
   "customers", "bank_accounts", "company_settings", "stored_files", "sessions", "rate_limit_buckets", "users",
 ];
 
@@ -16,6 +18,9 @@ export interface Fixtures {
   admin: Actor; finance: Actor; staff: Actor; staff2: Actor;
   customerId: string; productId: string; bankId: string;
   ppnId: string;
+  /** Terisi bila `seedFixtures({ finance: true })`: akun kas/bank + bagan akun usulan. */
+  bankAcctId: string; cashAcctId: string;
+  coa: Record<string, string>;
 }
 
 const PASSWORD = "Test-Password-123!";
@@ -28,7 +33,7 @@ async function makeUser(email: string, name: string, role: "ADMIN" | "FINANCE" |
 export const TEST_PASSWORD = PASSWORD;
 
 /** Data minimal yang meniru produksi: pengaturan, rekening, produk Demi Chef, pelanggan, pajak PPN 11%. */
-export async function seedFixtures(opts: { confirmNumbering?: boolean; start?: number } = {}): Promise<Fixtures> {
+export async function seedFixtures(opts: { confirmNumbering?: boolean; start?: number; finance?: boolean; openingDate?: string } = {}): Promise<Fixtures> {
   const admin = await makeUser("admin@test.local", "Admin Uji", "ADMIN");
   const finance = await makeUser("finance@test.local", "Finance Uji", "FINANCE");
   const staff = await makeUser("staff@test.local", "Staff Uji", "STAFF");
@@ -62,7 +67,16 @@ export async function seedFixtures(opts: { confirmNumbering?: boolean; start?: n
     },
   });
   const ppn = await prisma.taxConfiguration.create({ data: { code: "PPN11", name: "PPN 11%", rateBps: 1100, method: "EXCLUSIVE" } });
-  return { admin, finance, staff, staff2, customerId: customer.id, productId: product.id, bankId: bank.id, ppnId: ppn.id };
+  let bankAcctId = "", cashAcctId = "";
+  const coa: Record<string, string> = {};
+  if (opts.finance) {
+    await seedCoa(prisma);
+    for (const a of await prisma.coaAccount.findMany()) coa[a.code] = a.id;
+    const openingDate = new Date(`${opts.openingDate ?? "2026-01-01"}T00:00:00.000Z`);
+    bankAcctId = (await prisma.cashAccount.create({ data: { name: "Bank Mandiri", kind: "BANK", coaAccountId: coa["1-1200"]!, openingBalance: 10_000_000n, openingDate, isDefault: true } })).id;
+    cashAcctId = (await prisma.cashAccount.create({ data: { name: "Kas Kecil", kind: "KAS", coaAccountId: coa["1-1100"]!, openingBalance: 1_000_000n, openingDate, isDefault: true } })).id;
+  }
+  return { admin, finance, staff, staff2, customerId: customer.id, productId: product.id, bankId: bank.id, ppnId: ppn.id, bankAcctId, cashAcctId, coa };
 }
 
 /** Input invoice contoh dari brief: 7 Pax × Rp2.000.000. */

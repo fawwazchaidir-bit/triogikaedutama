@@ -78,6 +78,45 @@ enum FileKind {
   STAMP
   SIGNATURE
   PAYMENT_PROOF
+  EXPENSE_PROOF
+}
+
+// ───────────────────────────── Keuangan (tahap 1: pengeluaran, kas & bank, basis kas) ─────────────────────────────
+
+enum CoaType {
+  ASET
+  KEWAJIBAN
+  EKUITAS
+  PENDAPATAN
+  BEBAN
+}
+
+/// Kelompok arus kas untuk akun lawan: OPERASI (pendapatan/beban), INVESTASI (aset tetap), PENDANAAN (modal/utang).
+enum CashFlowSection {
+  OPERASI
+  INVESTASI
+  PENDANAAN
+}
+
+enum CashAccountKind {
+  KAS
+  BANK
+}
+
+enum CashDirection {
+  IN
+  OUT
+}
+
+enum LedgerEntryType {
+  ENTRY
+  REVERSAL
+}
+
+enum CashEntryStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum PaymentEntryType {
@@ -100,14 +139,18 @@ model User {
   updatedAt          DateTime  @updatedAt
 
   sessions          Session[]
-  customers         Customer[]   @relation("CustomerCreatedBy")
-  invoicesCreated   Invoice[]    @relation("InvoiceCreatedBy")
-  invoicesIssued    Invoice[]    @relation("InvoiceIssuedBy")
-  invoicesCancel    Invoice[]    @relation("InvoiceCancelledBy")
-  invoicesSubmitted Invoice[]    @relation("InvoiceSubmittedBy")
-  invoicesRejected  Invoice[]    @relation("InvoiceRejectedBy")
+  customers         Customer[]     @relation("CustomerCreatedBy")
+  invoicesCreated   Invoice[]      @relation("InvoiceCreatedBy")
+  invoicesIssued    Invoice[]      @relation("InvoiceIssuedBy")
+  invoicesCancel    Invoice[]      @relation("InvoiceCancelledBy")
+  invoicesSubmitted Invoice[]      @relation("InvoiceSubmittedBy")
+  invoicesRejected  Invoice[]      @relation("InvoiceRejectedBy")
   payments          Payment[]
   files             StoredFile[]
+  entriesCreated    CashEntry[]    @relation("CashEntryCreatedBy")
+  entriesApproved   CashEntry[]    @relation("CashEntryApprovedBy")
+  entriesRejected   CashEntry[]    @relation("CashEntryRejectedBy")
+  transfersCreated  CashTransfer[] @relation("CashTransferCreatedBy")
   auditLogs         AuditLog[]
 
   @@map("users")
@@ -297,8 +340,9 @@ model StoredFile {
   uploadedById String   @db.Uuid
   createdAt    DateTime @default(now())
 
-  uploadedBy User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
-  payments   Payment[]
+  uploadedBy  User        @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  payments    Payment[]
+  cashEntries CashEntry[]
 
   @@index([kind])
   @@map("stored_files")
@@ -482,18 +526,134 @@ model Payment {
   reason            String?
   isDownPayment     Boolean          @default(false)
   proofFileId       String?          @db.Uuid
+  /// Akun kas/bank penerima (null = belum dialokasikan, mis. dicatat sebelum modul kas dikonfigurasi).
+  cashAccountId     String?          @db.Uuid
   recordedById      String           @db.Uuid
   createdAt         DateTime         @default(now())
 
-  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  recordedBy User        @relation(fields: [recordedById], references: [id], onDelete: Restrict)
-  proofFile  StoredFile? @relation(fields: [proofFileId], references: [id], onDelete: Restrict)
-  reverses   Payment?    @relation("PaymentReversal", fields: [reversesPaymentId], references: [id], onDelete: Restrict)
-  reversal   Payment?    @relation("PaymentReversal")
+  cashAccount CashAccount? @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  invoice     Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  recordedBy  User         @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  proofFile   StoredFile?  @relation(fields: [proofFileId], references: [id], onDelete: Restrict)
+  reverses    Payment?     @relation("PaymentReversal", fields: [reversesPaymentId], references: [id], onDelete: Restrict)
+  reversal    Payment?     @relation("PaymentReversal")
 
   @@index([invoiceId])
   @@index([paymentDate])
+  @@index([cashAccountId])
   @@map("payments")
+}
+
+// ───────────────────────────── Keuangan: bagan akun, akun kas/bank, entri kas, transfer ─────────────────────────────
+
+/// Bagan akun (usulan SAK EMKM; dapat disesuaikan Administrator). Akun `manualEntry=true` boleh menjadi akun lawan entri kas manual.
+/// Akun `isSystem` dicadangkan (pendapatan invoice, piutang, pajak, dst.) untuk tahap akuntansi berikutnya.
+model CoaAccount {
+  id          String          @id @default(uuid()) @db.Uuid
+  code        String          @unique
+  name        String
+  type        CoaType
+  section     CashFlowSection @default(OPERASI)
+  manualEntry Boolean         @default(false)
+  isSystem    Boolean         @default(false)
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  cashAccounts CashAccount[]
+  entries      CashEntry[]
+
+  @@map("coa_accounts")
+}
+
+/// Kas / rekening bank perusahaan. Saldo = saldo awal (manual) + mutasi sejak `openingDate`.
+model CashAccount {
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String          @unique
+  kind           CashAccountKind
+  coaAccountId   String          @db.Uuid
+  isDefault      Boolean         @default(false)
+  isActive       Boolean         @default(true)
+  openingBalance BigInt          @default(0)
+  openingDate    DateTime        @db.Date
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  coaAccount    CoaAccount     @relation(fields: [coaAccountId], references: [id], onDelete: Restrict)
+  payments      Payment[]
+  entries       CashEntry[]
+  transfersFrom CashTransfer[] @relation("TransferFrom")
+  transfersTo   CashTransfer[] @relation("TransferTo")
+
+  @@map("cash_accounts")
+}
+
+/// Entri kas manual (pengeluaran, penerimaan lain, investasi, pendanaan). Setelah disetujui TIDAK PERNAH diubah/dihapus;
+/// koreksi = baris REVERSAL (dijaga trigger DB). Hanya entri APPROVED yang masuk saldo & laporan.
+model CashEntry {
+  id               String          @id @default(uuid()) @db.Uuid
+  entryType        LedgerEntryType @default(ENTRY)
+  reversesEntryId  String?         @unique @db.Uuid
+  entryDate        DateTime        @db.Date
+  direction        CashDirection
+  amount           BigInt
+  cashAccountId    String          @db.Uuid
+  counterAccountId String          @db.Uuid
+  description      String
+  payee            String?
+  reference        String?
+  proofFileId      String?         @db.Uuid
+  status           CashEntryStatus @default(PENDING)
+  /// Wajib untuk REVERSAL.
+  reason           String?
+  createdById      String          @db.Uuid
+  approvedById     String?         @db.Uuid
+  approvedAt       DateTime?
+  rejectedById     String?         @db.Uuid
+  rejectedAt       DateTime?
+  rejectionReason  String?
+  createdAt        DateTime        @default(now())
+
+  cashAccount    CashAccount @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  counterAccount CoaAccount  @relation(fields: [counterAccountId], references: [id], onDelete: Restrict)
+  proofFile      StoredFile? @relation(fields: [proofFileId], references: [id], onDelete: Restrict)
+  createdBy      User        @relation("CashEntryCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy     User?       @relation("CashEntryApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  rejectedBy     User?       @relation("CashEntryRejectedBy", fields: [rejectedById], references: [id], onDelete: Restrict)
+  reverses       CashEntry?  @relation("CashEntryReversal", fields: [reversesEntryId], references: [id], onDelete: Restrict)
+  reversal       CashEntry?  @relation("CashEntryReversal")
+
+  @@index([entryDate])
+  @@index([cashAccountId])
+  @@index([counterAccountId])
+  @@index([status])
+  @@map("cash_entries")
+}
+
+/// Pemindahan dana antar akun kas/bank (tidak memengaruhi laba rugi). Append-only; koreksi = transfer pembalik.
+model CashTransfer {
+  id                 String          @id @default(uuid()) @db.Uuid
+  entryType          LedgerEntryType @default(ENTRY)
+  reversesTransferId String?         @unique @db.Uuid
+  transferDate       DateTime        @db.Date
+  fromAccountId      String          @db.Uuid
+  toAccountId        String          @db.Uuid
+  amount             BigInt
+  description        String?
+  reference          String?
+  reason             String?
+  createdById        String          @db.Uuid
+  createdAt          DateTime        @default(now())
+
+  fromAccount CashAccount   @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccount   CashAccount   @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict)
+  createdBy   User          @relation("CashTransferCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  reverses    CashTransfer? @relation("CashTransferReversal", fields: [reversesTransferId], references: [id], onDelete: Restrict)
+  reversal    CashTransfer? @relation("CashTransferReversal")
+
+  @@index([transferDate])
+  @@map("cash_transfers")
 }
 
 // ───────────────────────────── Audit ─────────────────────────────

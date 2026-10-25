@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { SelectField, TextAreaField, TextField } from "@/components/ui/field";
@@ -7,6 +7,7 @@ import { MoneyInput } from "@/components/ui/money-input";
 import { Notice } from "@/components/ui/card";
 import { ApiClientError, api, errorMessage } from "@/lib/api-client";
 import { formatRupiah } from "@/lib/finance/money";
+import type { CashAccountOptionDto } from "@/lib/finance-types";
 
 const METHODS = ["Transfer", "Tunai", "QRIS", "Virtual Account", "Cek/Giro", "Lainnya"];
 // Tanggal awal tampilan (WIB). Server tetap memvalidasi tanggal pembayaran.
@@ -24,7 +25,14 @@ export function RecordPaymentDialog(props: { open: boolean; onClose: () => void;
 }
 
 function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClose: () => void; invoice: PayableInvoice; onDone: () => void }) {
-  const [pay, setPay] = useState({ date: today(), amount: invoice.balanceAmount as number | null, method: "Transfer", reference: "", note: "" });
+  const [pay, setPay] = useState({ date: today(), amount: invoice.balanceAmount as number | null, method: "Transfer", reference: "", note: "", cashAccountId: "" });
+  const [accounts, setAccounts] = useState<CashAccountOptionDto[]>([]);
+  useEffect(() => {
+    let live = true;
+    api<CashAccountOptionDto[]>("/api/finance/cash-accounts/options").then((a) => { if (live) setAccounts(a); }, () => undefined);
+    return () => { live = false; };
+  }, []);
+  const autoAccount = accounts.find((a) => a.isDefault && a.kind === (pay.method === "Tunai" ? "KAS" : "BANK"));
   const [proof, setProof] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +49,7 @@ function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClos
         if (!res.ok) throw new ApiClientError(j.error?.message ?? "Gagal mengunggah bukti.", res.status, j.error?.code ?? "UNKNOWN", j.error?.fieldErrors);
         proofFileId = j.data.id;
       }
-      await api("/api/payments", { body: { invoiceId: invoice.id, paymentDate: pay.date, amount: pay.amount ?? 0, method: pay.method, reference: pay.reference, note: pay.note, proofFileId } });
+      await api("/api/payments", { body: { invoiceId: invoice.id, paymentDate: pay.date, amount: pay.amount ?? 0, method: pay.method, reference: pay.reference, note: pay.note, proofFileId, cashAccountId: pay.cashAccountId || null } });
       setBusy(false);
       onDone();
     } catch (e) {
@@ -59,6 +67,13 @@ function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClos
         <TextField label="Tanggal pembayaran" type="date" required value={pay.date} onChange={(e) => setPay({ ...pay, date: e.target.value })} error={fe.paymentDate} />
         <MoneyInput label="Nominal" required value={pay.amount} onChange={(v) => setPay({ ...pay, amount: v })} error={fe.amount} hint="Tidak boleh melebihi sisa tagihan" />
         <SelectField label="Metode" value={pay.method} onChange={(e) => setPay({ ...pay, method: e.target.value })} error={fe.method}>{METHODS.map((m) => <option key={m}>{m}</option>)}</SelectField>
+        {accounts.length > 0 && (
+          <SelectField label="Diterima di" className="sm:col-span-2" value={pay.cashAccountId} onChange={(e) => setPay({ ...pay, cashAccountId: e.target.value })} error={fe.cashAccountId}
+            hint="Menentukan akun kas/bank yang saldonya bertambah">
+            <option value="">Otomatis{autoAccount ? ` — ${autoAccount.name}` : " (belum ada akun default untuk metode ini)"}</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </SelectField>
+        )}
         <TextField label="Referensi transfer" value={pay.reference} onChange={(e) => setPay({ ...pay, reference: e.target.value })} error={fe.reference} placeholder="No. referensi / berita transfer" />
         <TextAreaField className="sm:col-span-2" label="Catatan" rows={2} value={pay.note} onChange={(e) => setPay({ ...pay, note: e.target.value })} error={fe.note} />
         <div className="sm:col-span-2">

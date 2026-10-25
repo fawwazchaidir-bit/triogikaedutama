@@ -8,6 +8,7 @@ import { parseInput } from "../validate";
 import { assertCan, type Actor } from "../actor";
 import { writeAudit } from "../audit";
 import { lockInvoice } from "./invoice-lock";
+import { resolvePaymentAccount } from "./cash-accounts";
 import { derivePaymentStatus } from "@/lib/finance/calculate";
 import { isValidIsoDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
@@ -41,13 +42,14 @@ export async function applyLedger(tx: Tx, invoiceId: string): Promise<{ paid: nu
 }
 
 type PaymentRow = Prisma.PaymentGetPayload<{
-  include: { invoice: { select: { number: true; customerNameSnapshot: true } }; recordedBy: { select: { name: true } }; reversal: { select: { id: true } } };
+  include: { invoice: { select: { number: true; customerNameSnapshot: true } }; recordedBy: { select: { name: true } }; reversal: { select: { id: true } }; cashAccount: { select: { name: true } } };
 }>;
 
 const paymentInclude = {
   invoice: { select: { number: true, customerNameSnapshot: true } },
   recordedBy: { select: { name: true } },
   reversal: { select: { id: true } },
+  cashAccount: { select: { name: true } },
 } satisfies Prisma.PaymentInclude;
 
 export const toPaymentDto = (p: PaymentRow): PaymentDto => ({
@@ -56,6 +58,7 @@ export const toPaymentDto = (p: PaymentRow): PaymentDto => ({
   reference: p.reference, note: p.note, reason: p.reason, isDownPayment: p.isDownPayment, proofFileId: p.proofFileId,
   recordedByName: p.recordedBy.name, createdAt: p.createdAt.toISOString(),
   reversedByPaymentId: p.reversal?.id ?? null, reversesPaymentId: p.reversesPaymentId,
+  cashAccountId: p.cashAccountId, cashAccountName: p.cashAccount?.name ?? null,
 });
 
 export const paymentInputSchema = z.object({
@@ -66,6 +69,8 @@ export const paymentInputSchema = z.object({
   reference: optionalText(120, "Referensi transfer"),
   note: optionalText(500, "Catatan"),
   proofFileId: z.preprocess((v) => (v === "" ? null : v ?? null), uuid.nullable()),
+  /** Akun kas/bank penerima; kosong → akun default menurut metode (Tunai → kas, lainnya → bank). */
+  cashAccountId: z.preprocess((v) => (v === "" ? null : v ?? null), uuid.nullable()),
 });
 
 export async function recordPayment(actor: Actor, raw: unknown): Promise<PaymentDto> {
@@ -91,10 +96,11 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
       const f = await tx.storedFile.findUnique({ where: { id: input.proofFileId }, select: { kind: true } });
       if (f?.kind !== "PAYMENT_PROOF") throw Errors.validation("Bukti pembayaran tidak valid.", { proofFileId: "File tidak valid" });
     }
+    const cashAccountId = await resolvePaymentAccount(tx, input.method, input.cashAccountId);
     const p = await tx.payment.create({
       data: {
         invoiceId: inv.id, entryType: "PAYMENT", paymentDate: isoToDate(input.paymentDate), amount: BigInt(input.amount),
-        method: input.method, reference: input.reference, note: input.note, proofFileId: input.proofFileId, recordedById: actor.userId,
+        method: input.method, reference: input.reference, note: input.note, proofFileId: input.proofFileId, cashAccountId, recordedById: actor.userId,
       },
       include: paymentInclude,
     });
@@ -103,7 +109,7 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
       action: "payment.record", entityType: "Invoice", entityId: inv.id,
       summary: `Pembayaran ${formatRupiah(input.amount, "PLAIN")} dicatat pada invoice ${inv.number}`,
       before: { paid: Number(inv.paidAmount), balance },
-      after: { paymentId: p.id, amount: input.amount, method: input.method, reference: input.reference, paid: after.paid, balance: after.balance, paymentStatus: after.status },
+      after: { paymentId: p.id, amount: input.amount, method: input.method, reference: input.reference, cashAccountId, paid: after.paid, balance: after.balance, paymentStatus: after.status },
     });
     return toPaymentDto(p);
   });
@@ -134,7 +140,7 @@ export async function reversePayment(actor: Actor, paymentId: string, raw: unkno
     const p = await tx.payment.create({
       data: {
         invoiceId: orig.invoiceId, entryType: "REVERSAL", reversesPaymentId: orig.id, paymentDate: isoToDate(today),
-        amount: -orig.amount, method: orig.method, reference: orig.reference, reason, recordedById: actor.userId,
+        amount: -orig.amount, method: orig.method, reference: orig.reference, reason, cashAccountId: orig.cashAccountId, recordedById: actor.userId,
       },
       include: paymentInclude,
     });

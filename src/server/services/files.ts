@@ -7,7 +7,7 @@ import { assertCan, type Actor } from "../actor";
 import { writeAudit } from "../audit";
 import { can } from "@/lib/permissions";
 
-type FileKind = "LOGO" | "STAMP" | "SIGNATURE" | "PAYMENT_PROOF";
+type FileKind = "LOGO" | "STAMP" | "SIGNATURE" | "PAYMENT_PROOF" | "EXPENSE_PROOF";
 
 /** Tipe yang diizinkan, diverifikasi dari MAGIC BYTES (bukan dari ekstensi / Content-Type kiriman klien). SVG sengaja ditolak (risiko XSS). */
 const SIGNATURES: { mime: string; ext: string; test: (b: Uint8Array) => boolean }[] = [
@@ -21,6 +21,7 @@ const ALLOWED: Record<FileKind, string[]> = {
   STAMP: ["image/png", "image/jpeg"],
   SIGNATURE: ["image/png", "image/jpeg"],
   PAYMENT_PROOF: ["image/png", "image/jpeg", "application/pdf"],
+  EXPENSE_PROOF: ["image/png", "image/jpeg", "application/pdf"],
 };
 
 export function sniffMime(bytes: Uint8Array): { mime: string; ext: string } | null {
@@ -40,7 +41,7 @@ export async function storeFile(
   input: { name: string; bytes: Uint8Array },
   tx: Pick<typeof prisma, "storedFile"> = prisma,
 ): Promise<{ id: string; mimeType: string; size: number }> {
-  assertCan(actor, kind === "PAYMENT_PROOF" ? "payment:record" : "settings:manage");
+  assertCan(actor, kind === "PAYMENT_PROOF" ? "payment:record" : kind === "EXPENSE_PROOF" ? "expense:record" : "settings:manage");
   const maxBytes = env().MAX_UPLOAD_MB * 1024 * 1024;
   if (input.bytes.byteLength === 0) throw Errors.validation("File kosong.");
   if (input.bytes.byteLength > maxBytes) throw Errors.validation(`Ukuran file maksimal ${env().MAX_UPLOAD_MB} MB.`);
@@ -72,10 +73,12 @@ export async function readFileForActor(actor: Actor, id: string) {
   const ok =
     file.kind === "LOGO" ||
     (file.kind === "PAYMENT_PROOF" && can(actor.role, "payment:view")) ||
+    // Bukti pengeluaran: penyetuju/Finance melihat semua; pencatat hanya bukti yang ia unggah sendiri.
+    (file.kind === "EXPENSE_PROOF" && (can(actor.role, "finance:view") || (can(actor.role, "expense:view_own") && file.uploadedById === actor.userId))) ||
     ((file.kind === "STAMP" || file.kind === "SIGNATURE") && (can(actor.role, "settings:view") || can(actor.role, "invoice:pdf")));
   if (!ok) throw Errors.forbidden();
-  if (file.kind === "PAYMENT_PROOF") {
-    await writeAudit(prisma, actor, { action: "file.view", entityType: "StoredFile", entityId: id, summary: "Bukti pembayaran dibuka" });
+  if (file.kind === "PAYMENT_PROOF" || file.kind === "EXPENSE_PROOF") {
+    await writeAudit(prisma, actor, { action: "file.view", entityType: "StoredFile", entityId: id, summary: file.kind === "PAYMENT_PROOF" ? "Bukti pembayaran dibuka" : "Bukti pengeluaran dibuka" });
   }
   return file;
 }

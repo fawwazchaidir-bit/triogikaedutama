@@ -78,7 +78,7 @@ test.describe("autentikasi & keamanan HTTP", () => {
 
   test("halaman yang dilarang tampil 404 bagi peran tanpa izin, bukan error 500", async ({ page }) => {
     await login(page, "staff");
-    for (const p of ["/dashboard", "/audit-log"]) { // staff operasional: tanpa dashboard & audit log (Pembayaran, Laporan, Pengaturan = setara Finance Manager)
+    for (const p of ["/dashboard", "/audit-log", "/cash", "/statements"]) { // staff operasional: tanpa dashboard & audit log (Pembayaran, Laporan, Pengaturan = setara Finance Manager)
       const res = await page.goto(p);
       expect(res!.status(), p).toBe(404);
       await expect(page.getByText("Halaman tidak ditemukan")).toBeVisible();

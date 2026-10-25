@@ -13,7 +13,7 @@ export const GET = route<{ id: string }>(async ({ actor, params }) => {
       "Content-Type": file.mimeType,
       "Content-Length": String(file.size),
       // File bukti bayar diunduh (bukan dirender inline di origin kita) — mencegah eksekusi konten tak terduga.
-      "Content-Disposition": `${isPdf || file.kind === "PAYMENT_PROOF" ? "attachment" : "inline"}; filename="${file.originalName}"`,
+      "Content-Disposition": `${isPdf || file.kind === "PAYMENT_PROOF" || file.kind === "EXPENSE_PROOF" ? "attachment" : "inline"}; filename="${file.originalName}"`,
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "private, max-age=3600, immutable",

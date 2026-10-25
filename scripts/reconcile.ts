@@ -9,6 +9,9 @@
  *  3. invoice terbit/batal memiliki nomor, snapshot, dan nomor unik; draft tidak bernomor
  *  4. penghitung nomor tidak tertinggal dari nomor terbesar yang sudah terbit pada scope-nya
  *  5. setiap pembalikan menunjuk satu pembayaran asal dengan nominal berlawanan
+ *  6. modul kas: entri/transfer tidak mendahului saldo awal akun, pembalikan persis berlawanan, arah sesuai jenis akun,
+ *     entri berlaku memiliki penyetuju, satu akun default aktif per jenis, pembalikan pembayaran memakai akun asal
+ *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari.
  */
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
@@ -60,6 +63,58 @@ async function main() {
 
   add("invoice batal masih memiliki saldo pembayaran", await q(`
     SELECT "number" AS ref, 'paid=' || "paidAmount" AS detail FROM invoices WHERE "status" = 'CANCELLED' AND "paidAmount" <> 0`));
+
+  // ───────────── Modul kas & bank (basis kas) ─────────────
+  add("entri kas mendahului saldo awal akun", await q(`
+    SELECT e."id"::text AS ref, 'tanggal=' || e."entryDate" || ' saldo awal=' || a."openingDate" AS detail
+      FROM cash_entries e JOIN cash_accounts a ON a."id" = e."cashAccountId" WHERE e."entryDate" < a."openingDate"`));
+  add("transfer mendahului saldo awal akun / akun sama", await q(`
+    SELECT t."id"::text AS ref, 'tanggal=' || t."transferDate" AS detail
+      FROM cash_transfers t JOIN cash_accounts f ON f."id" = t."fromAccountId" JOIN cash_accounts g ON g."id" = t."toAccountId"
+     WHERE t."transferDate" < f."openingDate" OR t."transferDate" < g."openingDate" OR t."fromAccountId" = t."toAccountId"`));
+  add("pembalikan entri kas tidak valid", await q(`
+    SELECT r."id"::text AS ref, 'pembalikan ' || r."amount" || ' vs asal ' || COALESCE(o."amount"::text, 'TIDAK ADA') AS detail
+      FROM cash_entries r LEFT JOIN cash_entries o ON o."id" = r."reversesEntryId"
+     WHERE r."entryType" = 'REVERSAL' AND (o."id" IS NULL OR o."entryType" <> 'ENTRY' OR o."status" <> 'APPROVED' OR o."cashAccountId" <> r."cashAccountId"
+           OR o."counterAccountId" <> r."counterAccountId" OR o."amount" <> r."amount" OR o."direction" = r."direction")`));
+  add("pembalikan transfer tidak valid", await q(`
+    SELECT r."id"::text AS ref, 'pembalikan ' || r."amount" || ' vs asal ' || COALESCE(o."amount"::text, 'TIDAK ADA') AS detail
+      FROM cash_transfers r LEFT JOIN cash_transfers o ON o."id" = r."reversesTransferId"
+     WHERE r."entryType" = 'REVERSAL' AND (o."id" IS NULL OR o."entryType" <> 'ENTRY' OR o."fromAccountId" <> r."toAccountId" OR o."toAccountId" <> r."fromAccountId" OR o."amount" <> r."amount")`));
+  add("arah entri tidak sesuai jenis akun lawan", await q(`
+    SELECT e."id"::text AS ref, c."type" || ' arah ' || e."direction" AS detail
+      FROM cash_entries e JOIN coa_accounts c ON c."id" = e."counterAccountId"
+     WHERE e."entryType" = 'ENTRY' AND ((c."type" = 'BEBAN' AND e."direction" <> 'OUT') OR (c."type" = 'PENDAPATAN' AND e."direction" <> 'IN') OR NOT c."manualEntry" AND c."isSystem")`));
+  add("entri berlaku tanpa penyetuju / entri menunggu dengan keputusan", await q(`
+    SELECT "id"::text AS ref, 'status=' || "status" AS detail FROM cash_entries
+     WHERE ("status" = 'APPROVED' AND ("approvedById" IS NULL OR "approvedAt" IS NULL)) OR ("status" = 'PENDING' AND ("approvedById" IS NOT NULL OR "rejectedById" IS NOT NULL))`));
+  add("akun kas: default ganda / default nonaktif / bukan akun aset", await q(`
+    SELECT COALESCE(a."name", k."kind"::text) AS ref, 'default aktif=' || COALESCE(k.n, 0) AS detail
+      FROM (SELECT "kind", COUNT(*) AS n FROM cash_accounts WHERE "isDefault" AND "isActive" GROUP BY 1 HAVING COUNT(*) > 1) k LEFT JOIN cash_accounts a ON false
+    UNION ALL SELECT "name", 'default tetapi nonaktif' FROM cash_accounts WHERE "isDefault" AND NOT "isActive"
+    UNION ALL SELECT a."name", 'akun bagan akun bukan ASET (' || c."type" || ')' FROM cash_accounts a JOIN coa_accounts c ON c."id" = a."coaAccountId" WHERE c."type" <> 'ASET'`));
+  add("pembalikan pembayaran memakai akun kas berbeda dari pembayaran asal", await q(`
+    SELECT r."id"::text AS ref, 'akun asal=' || COALESCE(o."cashAccountId"::text, 'null') || ' pembalikan=' || COALESCE(r."cashAccountId"::text, 'null') AS detail
+      FROM payments r JOIN payments o ON o."id" = r."reversesPaymentId"
+     WHERE r."entryType" = 'REVERSAL' AND r."cashAccountId" IS DISTINCT FROM o."cashAccountId"`));
+
+  // Saldo per akun dihitung ulang di SQL murni (independen dari kode aplikasi).
+  const balances = await q<{ name: string; isActive: boolean; bal: bigint }>(`
+    SELECT a."name", a."isActive", a."openingBalance"
+      + COALESCE((SELECT SUM(p."amount") FROM payments p WHERE p."cashAccountId" = a."id" AND p."paymentDate" >= a."openingDate"), 0)
+      + COALESCE((SELECT SUM(CASE WHEN e."direction" = 'IN' THEN e."amount" ELSE -e."amount" END) FROM cash_entries e WHERE e."cashAccountId" = a."id" AND e."status" = 'APPROVED' AND e."entryDate" >= a."openingDate"), 0)
+      + COALESCE((SELECT SUM(t."amount") FROM cash_transfers t WHERE t."toAccountId" = a."id" AND t."transferDate" >= a."openingDate"), 0)
+      - COALESCE((SELECT SUM(t."amount") FROM cash_transfers t WHERE t."fromAccountId" = a."id" AND t."transferDate" >= a."openingDate"), 0) AS bal
+      FROM cash_accounts a ORDER BY a."name"`);
+  const warnings: string[] = [];
+  for (const b of balances) {
+    if (b.bal < 0n) warnings.push(`saldo NEGATIF pada ${b.name}: ${b.bal}`);
+    if (!b.isActive && b.bal !== 0n) warnings.push(`akun nonaktif ${b.name} masih bersaldo ${b.bal}`);
+  }
+  const stale = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM cash_entries WHERE "status" = 'PENDING' AND "createdAt" < now() - interval '14 days'`);
+  if (stale[0] && stale[0].n > 0n) warnings.push(`${stale[0].n} pengeluaran menunggu persetujuan lebih dari 14 hari`);
+  if (balances.length) console.log(`Saldo kas/bank (hitung ulang SQL): ${balances.map((b) => `${b.name}=${b.bal}`).join("; ")}`);
+  for (const w of warnings) console.warn(`⚠ PERINGATAN: ${w}`);
 
   const [{ n: invoices }] = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM invoices`) as [{ n: bigint }];
   const [{ n: payments }] = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM payments`) as [{ n: bigint }];

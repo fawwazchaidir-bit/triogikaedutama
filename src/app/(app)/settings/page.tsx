@@ -12,6 +12,9 @@ import { BanksManager } from "@/components/settings/banks-manager";
 import { NumberingPanel } from "@/components/settings/numbering-panel";
 import { TaxManager } from "@/components/settings/tax-manager";
 import { UsersManager } from "@/components/settings/users-manager";
+import { FinanceManager } from "@/components/settings/finance-manager";
+import { listCashAccounts } from "@/server/services/cash-accounts";
+import { listCoaAccounts } from "@/server/services/finance-coa";
 import { can } from "@/lib/permissions";
 import { todayIso } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -26,6 +29,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     { id: "company", label: "Perusahaan & dokumen" },
     { id: "banks", label: "Rekening bank" },
     { id: "numbering", label: "Penomoran invoice" },
+    ...(can(user.role, "finance:view") ? [{ id: "finance", label: "Keuangan" }] : []),
     ...(can(user.role, "tax:manage") ? [{ id: "tax", label: "Pajak" }] : []),
     ...(can(user.role, "user:manage") ? [{ id: "users", label: "Pengguna" }] : []),
   ];
@@ -44,6 +48,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       {tab === "company" && <CompanyForm initial={await getSettings(user)} readOnly={!manage} />}
       {tab === "banks" && <BanksManager items={await listBankAccounts(user)} canManage={manage} />}
       {tab === "numbering" && <NumberingPanel status={await getNumberingStatus(user)} canManage={can(user.role, "numbering:manage")} today={todayIso(env().APP_TIMEZONE)} />}
+      {tab === "finance" && <FinanceManager accounts={await listCashAccounts(user)} coa={await listCoaAccounts(user)} canManage={can(user.role, "finance:manage")} />}
       {tab === "tax" && <TaxManager items={await listTaxConfigs(user)} canManage={can(user.role, "tax:manage")} />}
       {tab === "users" && <UsersManager items={await listUsers(user)} selfId={user.userId} />}
     </div>

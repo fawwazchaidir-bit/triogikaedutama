@@ -8,6 +8,8 @@
  *   ADMIN   — (pemilik) semua, termasuk pengguna, pengaturan, penomoran, pajak, audit log.
  *   FINANCE — Finance Manager: VERIFIKATOR/penyetuju invoice (setujui → terbit, kembalikan), melihat seluruh data invoice,
  *             satu-satunya yang membatalkan invoice terbit & membalikkan pembayaran, plus pembayaran, laporan, unduh PDF.
+ *   Keuangan (basis kas): Administrator mengelola bagan akun/akun kas/saldo awal; Finance Manager melihat seluruh kas & laporan
+ *             keuangan, mencatat, menyetujui, dan membalikkan; Staff hanya mencatat pengeluaran (menunggu persetujuan) & melihat catatannya sendiri.
  *   STAFF   — Staff Operasional: menginput data invoice secara lengkap (termasuk harga/diskon/pajak) lalu MENGAJUKAN
  *             untuk diverifikasi; juga mencatat pembayaran, melihat laporan, dan seluruh invoice. Beda dengan Finance
  *             Manager: TIDAK dapat menyetujui/menerbitkan/mengembalikan, membatalkan invoice terbit, atau membalikkan
@@ -45,6 +47,13 @@ export const PERMISSIONS = [
   "numbering:manage",
   "tax:manage",
   "user:manage",
+  "finance:view",          // kas & bank, buku kas, seluruh pengeluaran, laporan keuangan (arus kas, laba rugi), bagan akun
+  "finance:manage",        // bagan akun, akun kas/bank, saldo awal
+  "cash:record",           // entri kas non-pengeluaran (penerimaan lain, investasi, pendanaan) & transfer antar akun — langsung berlaku
+  "expense:record",        // mencatat pengeluaran (staff: menunggu persetujuan; penyetuju: langsung berlaku)
+  "expense:view_own",      // melihat pengeluaran yang dicatat sendiri
+  "expense:approve",       // menyetujui/menolak pengeluaran staff
+  "expense:void",          // membalikkan entri kas/transfer yang sudah berlaku (koreksi)
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -62,6 +71,7 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "payment:view", "payment:record", "payment:reverse",
     "report:view",
     "settings:view",
+    "finance:view", "cash:record", "expense:record", "expense:approve", "expense:void",
   ]),
   // Staff Operasional = Finance Manager TANPA otoritas koreksi/persetujuan — approval (setujui/terbitkan/kembalikan),
   // pembatalan invoice terbit, dan pembalikan pembayaran tetap di tangan Finance Manager — serta TANPA dashboard;
@@ -75,6 +85,7 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "payment:view", "payment:record",
     "report:view",
     "settings:view",
+    "expense:record", "expense:view_own",
   ]),
 };
 
@@ -96,7 +107,10 @@ export const NAV_ITEMS = [
   { href: "/customers", label: "Pelanggan", anyOf: ["customer:view"] },
   { href: "/products", label: "Produk & Layanan", anyOf: ["product:view"] },
   { href: "/payments", label: "Pembayaran", anyOf: ["payment:view"] },
+  { href: "/expenses", label: "Pengeluaran", anyOf: ["expense:record", "expense:view_own", "finance:view"] },
+  { href: "/cash", label: "Kas & Bank", anyOf: ["finance:view"] },
   { href: "/reports", label: "Laporan", anyOf: ["report:view"] },
+  { href: "/statements", label: "Laporan Keuangan", anyOf: ["finance:view"] },
   { href: "/audit-log", label: "Audit Log", anyOf: ["audit:view"] },
   { href: "/settings", label: "Pengaturan", anyOf: ["settings:view"] },
 ] as const satisfies readonly { href: string; label: string; anyOf: readonly Permission[] }[];

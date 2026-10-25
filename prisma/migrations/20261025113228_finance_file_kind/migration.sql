@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "FileKind" ADD VALUE 'EXPENSE_PROOF';

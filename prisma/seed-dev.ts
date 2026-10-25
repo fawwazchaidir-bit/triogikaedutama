@@ -19,6 +19,8 @@ import { createTaxConfig } from "../src/server/services/tax";
 import { confirmNumbering } from "../src/server/services/numbering";
 import { cancelInvoice, createDraft, issueInvoice } from "../src/server/services/invoices";
 import { recordPayment } from "../src/server/services/payments";
+import { createCashAccount } from "../src/server/services/cash-accounts";
+import { createEntry, createTransfer } from "../src/server/services/cash-entries";
 import { addCalendarDays } from "../src/lib/finance/due-date";
 import { todayIso } from "../src/lib/format";
 
@@ -89,6 +91,11 @@ async function main() {
   const mk = async (customerId: string, invoiceDate: string, lines: unknown[], extra: Record<string, unknown> = {}) =>
     issueInvoice(finance, (await createDraft(finance, { ...base, customerId, invoiceDate, lines, ...extra })).id);
 
+  // Modul keuangan (basis kas): akun kas/bank + saldo awal (input manual Administrator) SEBELUM pembayaran dicatat.
+  const coaByCode = async (code: string) => (await prisma.coaAccount.findUniqueOrThrow({ where: { code } })).id;
+  const bankAcc = await createCashAccount(admin, { name: "Bank Mandiri IDR", kind: "BANK", coaAccountId: await coaByCode("1-1200"), openingBalance: 25_000_000, openingDate: ago(90), isDefault: true });
+  const cashAcc = await createCashAccount(admin, { name: "Kas Kecil", kind: "KAS", coaAccountId: await coaByCode("1-1100"), openingBalance: 2_000_000, openingDate: ago(90), isDefault: true });
+
   // Invoice referensi dari dokumen contoh (7 Pax Demi Chef).
   const ref = await mk(bima, ago(40), [demiLine(7)]);
   await recordPayment(finance, { invoiceId: ref.id, paymentDate: ago(36), amount: 5_000_000, method: "Transfer", reference: "TRX-0001" });
@@ -103,6 +110,14 @@ async function main() {
   const wrong = await mk(bima, ago(5), [demiLine(2)]);
   await cancelInvoice(finance, wrong.id, { reason: "Salah pelanggan — diterbitkan ulang" });
   await mk(bima, ago(2), [demiLine(3)], { paymentTermDays: 7 });
+  // Pengeluaran demo: Finance langsung berlaku; Staff menunggu persetujuan.
+  const cat = async (code: string) => coaByCode(code);
+  await createEntry(finance, { entryDate: ago(50), cashAccountId: bankAcc.id, counterAccountId: await cat("5-1100"), amount: 3_000_000, description: "Honor asesor uji kompetensi Demi Chef", payee: "Asesor BNSP", reference: "KW-001" });
+  await createEntry(finance, { entryDate: ago(45), cashAccountId: bankAcc.id, counterAccountId: await cat("6-1200"), amount: 2_500_000, description: "Sewa kantor bulanan", payee: "Pemilik gedung", reference: "KW-002" });
+  await createEntry(finance, { entryDate: ago(25), cashAccountId: bankAcc.id, counterAccountId: await cat("6-1300"), amount: 850_000, description: "Internet & listrik", reference: "KW-003" });
+  await createTransfer(finance, { transferDate: ago(20), fromAccountId: bankAcc.id, toAccountId: cashAcc.id, amount: 1_000_000, description: "Isi kas kecil" });
+  await createEntry(finance, { entryDate: ago(18), cashAccountId: cashAcc.id, counterAccountId: await cat("6-1600"), amount: 275_000, description: "ATK & fotokopi" });
+  await createEntry(staff, { entryDate: ago(3), cashAccountId: cashAcc.id, counterAccountId: await cat("5-1400"), amount: 420_000, description: "Konsumsi peserta pelatihan Barista", payee: "Katering Bu Sri", reference: "NOTA-17" });
   await createDraft(staff, { ...base, customerId: tirta, invoiceDate: today, lines: [baristaLine(4)] });
   await createDraft(finance, { ...base, customerId: smk, invoiceDate: today, lines: [demiLine(8)], remark: "Gelombang 2" });
 

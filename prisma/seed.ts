@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword, validatePasswordStrength } from "../src/server/auth/password";
+import { seedCoa } from "../src/server/services/finance-coa";
 
 export const prisma = new PrismaClient();
 
@@ -101,6 +102,10 @@ export async function seedBase() {
     });
     console.log("• Rekening bank awal dibuat.");
   }
+
+  // Bagan akun USULAN (SAK EMKM) untuk modul keuangan basis kas — tinjau bersama akuntan; akun kas/bank & saldo awal diinput Administrator.
+  const coaAdded = await seedCoa(prisma);
+  if (coaAdded > 0) console.log(`• Bagan akun usulan dibuat (${coaAdded} akun). Tambahkan akun kas/bank & saldo awal di Pengaturan → Keuangan.`);
 
   if (!(await prisma.product.findUnique({ where: { code: "DEMI-CHEF" } }))) {
     await prisma.product.create({

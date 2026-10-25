@@ -190,6 +190,20 @@ Sumber kebenaran: `src/lib/permissions.ts` (dengan tes — termasuk tes yang mem
 ditambah `invoice:submit` milik staff). Label peran di UI: *Administrator*, *Finance Manager*, *Staff Operasional* (nilai internal enum tetap `ADMIN/FINANCE/STAFF`).
 Karena Pembayaran dan Laporan memuat data seluruh invoice, Staff memang melihat semua invoice; yang tetap dibatasi hanyalah **menyunting/menghapus/mengajukan draft milik orang lain** (→ 404).
 
+### Hak akses modul keuangan (basis kas)
+
+| Izin | Admin | Finance Manager | Staff Operasional |
+|---|:--:|:--:|:--:|
+| Mencatat **pengeluaran** (kategori beban) | ✔ langsung berlaku | ✔ langsung berlaku | ✔ **menunggu persetujuan** |
+| Menyetujui / menolak pengeluaran staff | ✔ | ✔ | — |
+| Melihat pengeluaran | semua | semua | hanya miliknya |
+| Penerimaan lain, investasi, pendanaan, transfer antar akun | ✔ | ✔ | — |
+| Membalikkan entri kas / transfer | ✔ | ✔ | — |
+| Kas & Bank (saldo, buku kas), Laporan Keuangan (laba rugi, arus kas), ekspor | ✔ | ✔ | — |
+| Bagan akun, akun kas/bank, **saldo awal** | ✔ kelola | lihat | — |
+
+Pencatat tidak dapat menyetujui entrinya sendiri (maker-checker, ditegakkan di service).
+
 ## 9. Audit trail
 
 Dicatat (dengan pelaku, peran, IP, waktu, sebelum/sesudah, alasan): login/logout/gagal, pembuatan & perubahan draft, pengajuan, penarikan, pengembalian (dengan alasan), persetujuan & penerbitan, pembatalan,
@@ -221,6 +235,26 @@ Deviasi sadar dari referensi: (a) **A4 landscape** (atas permintaan revisi; refe
 (d) baris *Subtotal/Discount/Sisa Tagihan* hanya muncul bila relevan; (e) nama penandatangan mengikuti brief (`Elva Aditya Fawwaz, S.E.`) — referensi bertuliskan `Elva Aditya S, S.E.` (ubah di Pengaturan);
 (f) jabatan penandatangan **Finance Manager** (referensi: Finance).
 
+## 10b. Modul keuangan — tahap 1 (basis kas, SAK EMKM)
+
+Cakupan tahap 1: **pengeluaran, kas & bank, arus kas, laba rugi (basis kas)**. Neraca (Laporan Posisi Keuangan), jurnal berpasangan, tutup buku,
+rekonsiliasi bank, dan pajak (PPN, PPh 23 yang dipotong pelanggan, PPh badan) adalah tahap berikutnya. Seluruh data tahap 1 dirancang kompatibel dengan jurnal
+(setiap entri kas = akun kas ↔ akun lawan di bagan akun), sehingga tahap 2 hanya menurunkan jurnal dari data yang sama.
+
+| Tabel | Isi | Imutabilitas (trigger/CHECK DB) |
+|---|---|---|
+| `coa_accounts` | Bagan akun usulan SAK EMKM (`src/lib/accounting/coa-seed.ts`); `manualEntry` = boleh dipilih pada entri kas; `isSystem` = dicadangkan | kode/jenis terkunci setelah dipakai; akun sistem tak dapat diubah/dihapus; format kode `d-dddd` |
+| `cash_accounts` | Kas/bank, **saldo awal manual** + tanggal saldo awal, default per jenis | tanggal saldo awal/jenis/akun bagan terkunci setelah ada mutasi; satu default aktif per jenis (indeks unik parsial); harus akun ASET |
+| `cash_entries` | Entri kas manual: tanggal, arah IN/OUT, nominal, akun kas, akun lawan, status `PENDING/APPROVED/REJECTED`, bukti | **append-only** setelah diproses; hanya `PENDING` yang dapat berubah (→ keputusan) atau dihapus; tanggal ≥ saldo awal; BEBAN=OUT & PENDAPATAN=IN; pembalikan persis berlawanan, sekali saja |
+| `cash_transfers` | Transfer antar akun | append-only; akun berbeda; pembalik menukar akun & nominal persis |
+| `payments.cashAccountId` | Akun penerima pembayaran invoice (default menurut metode: Tunai → kas, lainnya → bank) | pembalikan harus ke akun asal; pembayaran baru hanya ke akun aktif |
+
+**Aturan inti (diuji tuntas):** saldo akun = saldo awal + Σ mutasi bertanggal ≥ tanggal saldo awal; hanya entri **APPROVED** yang dihitung; pendapatan = penerimaan invoice neto pembalikan
+(**diakui saat uang diterima**); beban = pengeluaran neto pembalikan; investasi & pendanaan tidak pernah masuk laba rugi; transfer tidak mengubah total kas; pembalikan bertanggal hari
+pembalikan sehingga laporan periode lampau tidak berubah diam-diam; saldo negatif **tidak diblokir** (pencatatan bisa terlambat) tetapi ditandai peringatan. Batas wajar per entri Rp10 triliun
+menjaga seluruh penjumlahan tetap eksak (< 2⁵³). Laba bersih sebelum pajak = kas neto aktivitas operasi bila semua penerimaan masuk saldo.
+Perhitungan ada di fungsi murni `src/lib/accounting/statements.ts` (tanpa IO), data dimuat `finance-data.ts`, ditampilkan di `/expenses`, `/cash`, `/statements`.
+
 ## 11. Risiko teknis & mitigasi
 
 | Risiko | Mitigasi | Bukti |
@@ -228,6 +262,7 @@ Deviasi sadar dari referensi: (a) **A4 landscape** (atas permintaan revisi; refe
 | Nomor ganda / lubang akibat konkurensi | Row lock + UNIQUE + alokasi dalam transaksi | Tes paralel (service & E2E) |
 | Penerbitan/persetujuan ganda (klik ganda) | `lockInvoice` + cek status setelah kunci | Tes 4× paralel → 1 sukses; persetujuan paralel → 1 sukses |
 | Isi diubah setelah diajukan/diperiksa | Isi SUBMITTED dikunci (aplikasi + trigger) dan persetujuan menghitung ulang & mensyaratkan hasil identik | Tes service + SQL langsung ditolak |
+| Saldo kas salah / entri diubah diam-diam | Append-only + pembalikan, saldo dihitung dari ledger (bukan cache), `db:reconcile` menghitung ulang saldo di SQL murni | Tes 3 putaran (fuzz berbasis model, SQL langsung, konkurensi) |
 | Dokumen draft disalahgunakan sebagai invoice resmi | Watermark DRAFT, tanpa nomor/cap/tanda tangan di sumber data, peringatan di kaki halaman | Tes PDF (teks + hitung gambar) |
 | Invoice lama berubah diam-diam | Snapshot + trigger DB + service menolak | Tes SQL langsung ditolak |
 | Salah hitung / pembulatan | BigInt, urutan eksplisit, satu pembulatan, CHECK identitas total | Tes unit kalkulasi/terbilang + CHECK DB |

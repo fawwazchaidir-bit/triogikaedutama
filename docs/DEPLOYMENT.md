@@ -116,6 +116,7 @@ Pasang reverse proxy HTTPS (konfigurasi Nginx di atas) di depan `127.0.0.1:3000`
 4. **Pengaturan → Pajak**: tambahkan konfigurasi pajak **sesuai ketentuan lembaga** (kosong = semua bebas pajak).
 5. **Pengaturan → Penomoran invoice**: konfirmasi nomor berikutnya (**periksa dulu apakah 00434/00435 sudah terpakai**).
 6. **Produk & Layanan**: lengkapi katalog. **Pelanggan**: tambahkan pelanggan aktif.
+6b. **Pengaturan → Keuangan**: tinjau **bagan akun usulan** bersama akuntan; tambahkan **akun kas & bank beserta saldo awal dan tanggalnya** (sebelum pembayaran invoice pertama dicatat agar masuk saldo). Pembayaran sebelum akun ada ditandai "belum dialokasikan".
 7. **Pengaturan → Pengguna**: buat akun **Finance Manager** (penyetuju) & **Staff Operasional** (penginput) — password sementara, wajib diganti. Periksa **Pengaturan → Perusahaan & dokumen → Jabatan penandatangan = "Finance Manager"** dan unggah tanda tangan & cap (hanya tercetak pada invoice yang sudah disetujui).
 8. Uji alur penuh: login Staff → buat & **ajukan** invoice uji → login Finance Manager → **setujui & terbitkan** → unduh PDF (landscape) → bandingkan dengan dokumen Word → batalkan (alasan: uji) bila tidak dipakai. Pastikan PDF sebelum disetujui berwatermark DRAFT.
 9. Jadwalkan backup & rekonsiliasi (bagian 5) dan **lakukan satu kali latihan pemulihan**.
@@ -135,7 +136,7 @@ BACKUP_DIR=/var/backups/trilogika npm run db:backup
 
 - **Salin arsip ke luar server** (object storage terenkripsi / disk terpisah). Backup memuat data pelanggan, rekening, dan bukti bayar → perlakukan sebagai data
   sensitif (skrip memakai `umask 077`; enkripsi saat disimpan/dikirim adalah tanggung jawab infrastruktur).
-- `db:reconcile` keluar dengan kode ≠ 0 bila ada ketidakcocokan (cache pembayaran vs ledger, identitas total, nomor, pembalikan) — pasang notifikasi pada kegagalan.
+- `db:reconcile` keluar dengan kode ≠ 0 bila ada ketidakcocokan (cache pembayaran vs ledger, identitas total, nomor, pembalikan, **integritas kas**: tanggal entri vs saldo awal, pembalikan entri/transfer, arah entri, akun default); mencetak saldo kas/bank hasil hitung ulang SQL dan **peringatan** (saldo negatif, akun nonaktif bersaldo, pengeluaran menunggu > 14 hari) tanpa menggagalkan — pasang notifikasi pada kegagalan.
 - **Latihan pemulihan (disarankan tiap kuartal)** — ke database baru, tanpa menyentuh produksi:
 
 ```bash

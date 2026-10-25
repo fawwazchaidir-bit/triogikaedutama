@@ -4,7 +4,7 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  BarChart3, FileText, KeyRound, LayoutDashboard, LogOut, Menu, Package, ScrollText, Settings, Users, Wallet, X,
+  BarChart3, FileText, KeyRound, Landmark, LayoutDashboard, LogOut, Menu, Package, Receipt, ScrollText, Settings, TrendingUp, Users, Wallet, X,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { api } from "@/lib/api-client";
@@ -17,7 +17,10 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "/customers": Users,
   "/products": Package,
   "/payments": Wallet,
+  "/expenses": Receipt,
+  "/cash": Landmark,
   "/reports": BarChart3,
+  "/statements": TrendingUp,
   "/audit-log": ScrollText,
   "/settings": Settings,
 };
