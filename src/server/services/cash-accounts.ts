@@ -15,6 +15,7 @@ import { formatRupiah } from "@/lib/finance/money";
 import { todayIso } from "@/lib/format";
 import { isoDate, optionalText, requiredText, rupiah, uuid } from "@/lib/validation/common";
 import { CASH_AMOUNT_MAX } from "@/lib/accounting/limits";
+import { assertBooksOpen, getBooksLock } from "./books-lock";
 import type { CashAccountDto, CashAccountOptionDto } from "@/lib/finance-types";
 
 /**
@@ -84,8 +85,14 @@ export async function createCashAccount(actor: Actor, raw: unknown): Promise<Cas
   if (input.openingDate > today) throw Errors.validation("Tanggal saldo awal tidak boleh di masa depan.", { openingDate: "Tidak boleh di masa depan" });
   const created = await transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('cash_account_defaults'))`; // serialisasi penentuan akun default
+    await assertBooksOpen(tx, input.openingDate, "saldo awal akun", "openingDate");
     const coa = await tx.coaAccount.findUnique({ where: { id: input.coaAccountId } });
     if (!coa || !coa.isActive || coa.type !== "ASET") throw Errors.validation("Pilih akun bagan akun berjenis ASET yang aktif.", { coaAccountId: "Harus akun aset aktif" });
+    // Saldo akun kas diturunkan dari modul kas; akun bagan akun-nya tidak boleh dipakai jalur lain (jurnal manual, akun lawan entri kas, akun sistem lain).
+    if (coa.manualEntry) throw Errors.validation(`Akun ${coa.code} dapat dipilih pada entri kas manual sehingga tidak boleh menjadi akun kas/bank. Buat akun aset lancar baru (mis. 1-11xx).`, { coaAccountId: "Pilih akun kas/bank khusus" });
+    if (coa.isSystem && coa.code !== "1-1100" && coa.code !== "1-1200") throw Errors.validation(`Akun sistem ${coa.code} tidak dapat dipetakan ke akun kas/bank.`, { coaAccountId: "Pilih 1-1100, 1-1200, atau akun kas baru" });
+    if (await tx.journalLine.findFirst({ where: { accountId: coa.id }, select: { id: true } })) throw Errors.validation(`Akun ${coa.code} sudah memiliki jurnal manual dan tidak dapat menjadi akun kas/bank.`, { coaAccountId: "Sudah ada jurnal manual" });
+    if (await tx.cashEntry.findFirst({ where: { counterAccountId: coa.id }, select: { id: true } })) throw Errors.validation(`Akun ${coa.code} sudah dipakai sebagai kategori entri kas dan tidak dapat menjadi akun kas/bank.`, { coaAccountId: "Sudah dipakai sebagai kategori" });
     if (await tx.cashAccount.findUnique({ where: { name: input.name }, select: { id: true } })) throw Errors.conflict(`Akun dengan nama "${input.name}" sudah ada.`);
     const hasDefault = await tx.cashAccount.findFirst({ where: { kind: input.kind, isDefault: true, isActive: true }, select: { id: true } });
     const makeDefault = input.isDefault || !hasDefault;
@@ -134,9 +141,16 @@ export async function updateCashAccount(actor: Actor, id: string, raw: unknown):
     }
     if (input.openingDate && input.openingDate !== dateToIso(cur.openingDate)) {
       if (hasMv) throw Errors.conflict("Akun sudah memiliki mutasi: tanggal saldo awal tidak dapat diubah.");
+      if (await tx.journalEntry.findFirst({ select: { id: true } })) throw Errors.conflict("Sudah ada jurnal manual: tanggal mulai pembukuan tidak dapat digeser.");
       if (input.openingDate > today) throw Errors.validation("Tanggal saldo awal tidak boleh di masa depan.", { openingDate: "Tidak boleh di masa depan" });
     }
     const newOpening = input.openingBalance !== undefined ? BigInt(input.openingBalance) : cur.openingBalance;
+    if (newOpening !== cur.openingBalance || (input.openingDate && input.openingDate !== dateToIso(cur.openingDate))) {
+      const lock = await getBooksLock(tx);
+      if (lock && (dateToIso(cur.openingDate) <= lock || (input.openingDate ?? dateToIso(cur.openingDate)) <= lock)) {
+        throw Errors.conflict(`Buku sudah ditutup sampai ${lock}: saldo awal akun bertanggal ${dateToIso(cur.openingDate)} tidak dapat diubah. Buka kembali periode lebih dulu.`);
+      }
+    }
     if (newOpening !== cur.openingBalance && hasMv && !input.reason) {
       throw Errors.validation("Alasan wajib diisi untuk mengubah saldo awal pada akun yang sudah memiliki mutasi.", { reason: "Wajib diisi" });
     }

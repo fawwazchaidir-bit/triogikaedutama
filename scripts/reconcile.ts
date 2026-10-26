@@ -11,7 +11,11 @@
  *  5. setiap pembalikan menunjuk satu pembayaran asal dengan nominal berlawanan
  *  6. modul kas: entri/transfer tidak mendahului saldo awal akun, pembalikan persis berlawanan, arah sesuai jenis akun,
  *     entri berlaku memiliki penyetuju, satu akun default aktif per jenis, pembalikan pembayaran memakai akun asal
- *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari.
+ *  7. buku besar (tahap 2): jurnal manual seimbang & ≥ 2 baris, pembalikan persis berlawanan, tidak mendahului mulai pembukuan,
+ *     tidak menyentuh akun kas/bank atau akun cadangan, jurnal saldo awal hanya akun neraca; akun sistem (3-2100, 4-1100, 1-1450) ada & aktif;
+ *     akun lawan entri kas bukan akun kas/bank maupun akun cadangan
+ *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari,
+ *     penerimaan invoice belum dialokasikan ke kas (saldo 1-1450), pembayaran mendahului saldo awal akunnya (dikecualikan dari buku).
  */
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
@@ -98,6 +102,41 @@ async function main() {
       FROM payments r JOIN payments o ON o."id" = r."reversesPaymentId"
      WHERE r."entryType" = 'REVERSAL' AND r."cashAccountId" IS DISTINCT FROM o."cashAccountId"`));
 
+  // ───────────── Buku besar & jurnal manual (tahap 2) ─────────────
+  add("akun sistem buku besar hilang / nonaktif", await q(`
+    SELECT c."code" AS ref, 'tidak ada atau nonaktif' AS detail FROM (VALUES ('3-2100'), ('4-1100'), ('1-1450')) c("code")
+      LEFT JOIN coa_accounts a ON a."code" = c."code" WHERE a."id" IS NULL OR NOT a."isActive"`));
+  add("jurnal manual tidak seimbang / kurang dari dua baris", await q(`
+    SELECT 'JU-' || lpad(j."numberSeq"::text, 6, '0') AS ref, 'debit=' || COALESCE(SUM(l."debit"), 0) || ' kredit=' || COALESCE(SUM(l."credit"), 0) || ' baris=' || COUNT(l."id") AS detail
+      FROM journal_entries j LEFT JOIN journal_lines l ON l."journalId" = j."id"
+     GROUP BY j."id" HAVING COALESCE(SUM(l."debit"), 0) <> COALESCE(SUM(l."credit"), 0) OR COUNT(l."id") < 2`));
+  add("pembalikan jurnal tidak persis kebalikan jurnal asal", await q(`
+    SELECT 'JU-' || lpad(r."numberSeq"::text, 6, '0') AS ref, 'akun ' || COALESCE(x."accountId"::text, '?') AS detail
+      FROM journal_entries r
+      JOIN LATERAL (
+        SELECT COALESCE(a."accountId", b."accountId") AS "accountId"
+          FROM (SELECT "accountId", SUM("debit") AS d, SUM("credit") AS c FROM journal_lines WHERE "journalId" = r."id" GROUP BY 1) a
+          FULL JOIN (SELECT "accountId", SUM("debit") AS d, SUM("credit") AS c FROM journal_lines WHERE "journalId" = r."reversesJournalId" GROUP BY 1) b ON a."accountId" = b."accountId"
+         WHERE COALESCE(a.d, 0) <> COALESCE(b.c, 0) OR COALESCE(a.c, 0) <> COALESCE(b.d, 0)
+      ) x ON true
+     WHERE r."entryType" = 'REVERSAL'`));
+  add("jurnal mendahului tanggal mulai pembukuan / jurnal saldo awal salah tanggal", await q(`
+    SELECT 'JU-' || lpad(j."numberSeq"::text, 6, '0') AS ref, 'tanggal=' || j."journalDate" || ' mulai=' || s.d AS detail
+      FROM journal_entries j, (SELECT MIN("openingDate") AS d FROM cash_accounts) s
+     WHERE s.d IS NULL OR j."journalDate" < s.d OR (j."kind" = 'OPENING' AND j."entryType" = 'ENTRY' AND j."journalDate" <> s.d)`));
+  add("jurnal menyentuh akun kas/bank atau akun cadangan", await q(`
+    SELECT 'JU-' || lpad(j."numberSeq"::text, 6, '0') AS ref, c."code" || ' ' || c."name" AS detail
+      FROM journal_lines l JOIN journal_entries j ON j."id" = l."journalId" JOIN coa_accounts c ON c."id" = l."accountId"
+     WHERE c."code" IN ('4-1100', '1-1450', '3-2200') OR EXISTS (SELECT 1 FROM cash_accounts k WHERE k."coaAccountId" = c."id")`));
+  add("jurnal saldo awal memuat akun laba rugi", await q(`
+    SELECT 'JU-' || lpad(j."numberSeq"::text, 6, '0') AS ref, c."code" AS detail
+      FROM journal_lines l JOIN journal_entries j ON j."id" = l."journalId" JOIN coa_accounts c ON c."id" = l."accountId"
+     WHERE j."kind" = 'OPENING' AND j."entryType" = 'ENTRY' AND c."type" IN ('PENDAPATAN', 'BEBAN')`));
+  add("akun lawan entri kas adalah akun kas/bank atau akun cadangan", await q(`
+    SELECT e."id"::text AS ref, c."code" || ' ' || c."name" AS detail
+      FROM cash_entries e JOIN coa_accounts c ON c."id" = e."counterAccountId"
+     WHERE c."code" IN ('4-1100', '1-1450', '3-2100') OR EXISTS (SELECT 1 FROM cash_accounts k WHERE k."coaAccountId" = c."id")`));
+
   // Saldo per akun dihitung ulang di SQL murni (independen dari kode aplikasi).
   const balances = await q<{ name: string; isActive: boolean; bal: bigint }>(`
     SELECT a."name", a."isActive", a."openingBalance"
@@ -111,6 +150,10 @@ async function main() {
     if (b.bal < 0n) warnings.push(`saldo NEGATIF pada ${b.name}: ${b.bal}`);
     if (!b.isActive && b.bal !== 0n) warnings.push(`akun nonaktif ${b.name} masih bersaldo ${b.bal}`);
   }
+  const unalloc = await q<{ n: bigint; total: bigint | null }>(`SELECT COUNT(*) AS n, SUM("amount") AS total FROM payments WHERE "cashAccountId" IS NULL`);
+  if (unalloc[0] && unalloc[0].n > 0n) warnings.push(`${unalloc[0].n} baris pembayaran invoice belum dialokasikan ke akun kas/bank (saldo penampung 1-1450 = ${unalloc[0].total})`);
+  const preOpen = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."paymentDate" < a."openingDate"`);
+  if (preOpen[0] && preOpen[0].n > 0n) warnings.push(`${preOpen[0].n} baris pembayaran bertanggal sebelum saldo awal akunnya (dianggap sudah termasuk saldo awal; tidak masuk buku besar & laba rugi)`);
   const stale = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM cash_entries WHERE "status" = 'PENDING' AND "createdAt" < now() - interval '14 days'`);
   if (stale[0] && stale[0].n > 0n) warnings.push(`${stale[0].n} pengeluaran menunggu persetujuan lebih dari 14 hari`);
   if (balances.length) console.log(`Saldo kas/bank (hitung ulang SQL): ${balances.map((b) => `${b.name}=${b.bal}`).join("; ")}`);

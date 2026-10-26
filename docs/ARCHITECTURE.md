@@ -237,9 +237,9 @@ Deviasi sadar dari referensi: (a) **A4 landscape** (atas permintaan revisi; refe
 
 ## 10b. Modul keuangan — tahap 1 (basis kas, SAK EMKM)
 
-Cakupan tahap 1: **pengeluaran, kas & bank, arus kas, laba rugi (basis kas)**. Neraca (Laporan Posisi Keuangan), jurnal berpasangan, tutup buku,
-rekonsiliasi bank, dan pajak (PPN, PPh 23 yang dipotong pelanggan, PPh badan) adalah tahap berikutnya. Seluruh data tahap 1 dirancang kompatibel dengan jurnal
-(setiap entri kas = akun kas ↔ akun lawan di bagan akun), sehingga tahap 2 hanya menurunkan jurnal dari data yang sama.
+Cakupan tahap 1: **pengeluaran, kas & bank, arus kas, laba rugi (basis kas)**. Neraca, jurnal berpasangan, buku besar, dan penutupan buku ada di **tahap 2** (§10c).
+Rekonsiliasi bank dan pajak (PPN, PPh 23 yang dipotong pelanggan, PPh badan) adalah tahap berikutnya. Seluruh data tahap 1 dirancang kompatibel dengan jurnal
+(setiap entri kas = akun kas ↔ akun lawan di bagan akun), sehingga tahap 2 menurunkan jurnal dari data yang sama.
 
 | Tabel | Isi | Imutabilitas (trigger/CHECK DB) |
 |---|---|---|
@@ -257,6 +257,36 @@ pembalikan sehingga laporan periode lampau tidak berubah diam-diam; saldo negati
 menjaga seluruh penjumlahan tetap eksak (< 2⁵³). Laba bersih sebelum pajak = kas neto aktivitas operasi bila semua penerimaan masuk saldo.
 Perhitungan ada di fungsi murni `src/lib/accounting/statements.ts` (tanpa IO), data dimuat `finance-data.ts`, ditampilkan di `/expenses`, `/cash`, `/statements`.
 
+## 10c. Modul keuangan — tahap 2 (buku besar berpasangan, basis kas)
+
+Cakupan: **buku jurnal, jurnal manual, buku besar per akun, neraca saldo, neraca (Laporan Posisi Keuangan), laba rugi dari buku besar, penutupan buku**.
+Prinsip desain: **jurnal kejadian kas tidak disimpan — diturunkan** dari tabel sumbernya setiap kali laporan dibuat (`src/lib/accounting/ledger.ts`, fungsi murni; dimuat oleh
+`finance-ledger.ts`). Dengan begitu buku besar tidak mungkin berselisih dari modul kas dan tidak perlu backfill. Hanya **jurnal manual** yang disimpan.
+
+| Kejadian | Jurnal turunan |
+|---|---|
+| Saldo awal akun kas/bank | Dr akun kas / **Cr 3-2100 Saldo Laba** (pada tanggal saldo awal) |
+| Pembayaran invoice | Dr akun kas / Cr 4-1100 Pendapatan Jasa (pembalikan: kebalikannya). Belum dialokasikan: Dr **1-1450** (penampung) / Cr 4-1100. Bertanggal **sebelum** saldo awal akunnya: dilewati (sudah termasuk saldo awal) |
+| Entri kas manual berlaku | Uang keluar: Dr akun lawan / Cr akun kas · uang masuk: Dr akun kas / Cr akun lawan (hanya status `APPROVED`) |
+| Transfer | Dr akun tujuan / Cr akun asal |
+| Jurnal manual | Sebagaimana disimpan (`journal_entries` + `journal_lines`) |
+
+| Tabel | Imutabilitas / pagar database |
+|---|---|
+| `journal_entries`, `journal_lines` | **append-only**; `debit`/`credit` ≥ 0 dan tepat satu sisi > 0; **trigger konstrain tertunda**: saat COMMIT setiap jurnal ≥ 2 baris dan Σ debit = Σ kredit; pembalikan harus **persis** kebalikan per akun, sekali saja; tanggal ≥ tanggal mulai pembukuan (saldo awal akun kas tertua); jurnal `OPENING` tepat pada tanggal itu dan hanya akun neraca; akun aktif |
+| akun terlarang bagi jurnal manual | akun yang dipetakan ke kas/bank, **4-1100**, **1-1450**, **3-2200** (dijaga trigger DB) |
+| pemetaan akun kas ↔ bagan akun | akun kas/bank hanya boleh dipetakan ke akun aset non-manual (bukan akun sistem selain 1-1100/1-1200) yang belum punya jurnal manual & belum jadi akun lawan entri kas; akun lawan entri kas tak boleh akun kas/bank; kode/jenis akun yang sudah dijurnal terkunci. Perubahan pemetaan memegang kunci advisory **eksklusif**, setiap sisipan jurnal/entri memegang kunci **bersama** (tak ada balapan) |
+| `company_settings.booksLockedThrough` | **Penutupan buku** (opsional): pembayaran, entri kas, transfer, jurnal, persetujuan pengeluaran, dan saldo awal akun bertanggal ≤ tanggal tutup ditolak (service + trigger). Koreksi = pembalikan bertanggal hari ini. Tanggal tutup harus < hari ini; mengubah/membuka wajib beralasan & tercatat di audit (`books.lock`/`books.reopen`) |
+
+**Identitas yang diuji:** neraca saldo selalu seimbang; Aset = Liabilitas + Ekuitas; saldo buku besar 1-1100/1-1200 = saldo akun kas di modul kas; laba rugi buku besar = laba rugi tahap 1 ± jurnal manual
+(penyusutan, pajak). Neraca **menghitung** laba ditahan (laba tahun-tahun sebelumnya) dan laba tahun berjalan dari akun laba rugi — tidak ada jurnal penutup yang disimpan, sehingga tidak ada langkah
+"tutup tahun" yang bisa terlupa atau salah. Akun 3-2200 karenanya dicadangkan. Pajak tetap **belum diotomasi** (jurnal manual boleh mencatat beban pajak/utang pajak, tanpa tarif yang diasumsikan).
+
+**Pengujian tahap 2 (4 putaran + penutupan buku):** A — skenario perusahaan hitung-tangan lewat service (`ledger-round1-recording`); B — adversarial: SQL langsung ke tabel jurnal, pemetaan akun, input aneh,
+balapan (`ledger-round2-adversarial`); C — fuzz berbasis model dengan **tiga pembanding independen** (buku bayangan di tes, oracle SQL murni, mesin aplikasi) pada banyak tanggal + `db:reconcile`
+bersih/rusak-terdeteksi (`ledger-round3-fuzz`); D — kesalahan pencatatan lazim (salah kategori, pembayaran ganda/salah akun, jurnal salah nominal, kas minus, invoice dibatalkan, bagan akun belum siap, dst.)
+(`ledger-round4-mistakes`); E — penutupan buku (`ledger-round5-period-lock`). Uji mutasi (merusak mesin/trigger dengan sengaja) memastikan tes benar-benar gagal bila ada yang rusak.
+
 ## 11. Risiko teknis & mitigasi
 
 | Risiko | Mitigasi | Bukti |
@@ -265,6 +295,8 @@ Perhitungan ada di fungsi murni `src/lib/accounting/statements.ts` (tanpa IO), d
 | Penerbitan/persetujuan ganda (klik ganda) | `lockInvoice` + cek status setelah kunci | Tes 4× paralel → 1 sukses; persetujuan paralel → 1 sukses |
 | Isi diubah setelah diajukan/diperiksa | Isi SUBMITTED dikunci (aplikasi + trigger) dan persetujuan menghitung ulang & mensyaratkan hasil identik | Tes service + SQL langsung ditolak |
 | Saldo kas salah / entri diubah diam-diam | Append-only + pembalikan, saldo dihitung dari ledger (bukan cache), `db:reconcile` menghitung ulang saldo di SQL murni | Tes 3 putaran (fuzz berbasis model, SQL langsung, konkurensi) |
+| Buku besar tak seimbang / berselisih dari kas | Jurnal kas diturunkan (bukan disalin); jurnal manual dijaga trigger tertunda (Σ debit = Σ kredit); neraca saldo & neraca menampilkan status seimbang; `db:reconcile` memeriksa jurnal | Tes 4 putaran tahap 2 (fuzz dengan oracle SQL), uji mutasi |
+| Transaksi bertanggal mundur mengubah laporan periode yang sudah dibaca | Penutupan buku (service + trigger); koreksi = pembalikan bertanggal hari ini | `ledger-round5-period-lock`, E2E |
 | Dokumen draft disalahgunakan sebagai invoice resmi | Watermark DRAFT, tanpa nomor/cap/tanda tangan di sumber data, peringatan di kaki halaman | Tes PDF (teks + hitung gambar) |
 | Invoice lama berubah diam-diam | Snapshot + trigger DB + service menolak | Tes SQL langsung ditolak |
 | Salah hitung / pembulatan | BigInt, urutan eksplisit, satu pembulatan, CHECK identitas total | Tes unit kalkulasi/terbilang + CHECK DB |

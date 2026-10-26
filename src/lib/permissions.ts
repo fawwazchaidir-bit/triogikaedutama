@@ -53,7 +53,9 @@ export const PERMISSIONS = [
   "expense:record",        // mencatat pengeluaran (staff: menunggu persetujuan; penyetuju: langsung berlaku)
   "expense:view_own",      // melihat pengeluaran yang dicatat sendiri
   "expense:approve",       // menyetujui/menolak pengeluaran staff
-  "expense:void",          // membalikkan entri kas/transfer yang sudah berlaku (koreksi)
+  "expense:void",          // membalikkan entri kas/transfer/jurnal yang sudah berlaku (koreksi)
+  "journal:record",        // mencatat jurnal manual (penyesuaian, penyusutan, saldo awal non-kas) — langsung berlaku
+  "books:lock",            // menetapkan/membuka penutupan buku (transaksi ≤ tanggal tutup ditolak)
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -71,7 +73,7 @@ export const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "payment:view", "payment:record", "payment:reverse",
     "report:view",
     "settings:view",
-    "finance:view", "cash:record", "expense:record", "expense:approve", "expense:void",
+    "finance:view", "cash:record", "expense:record", "expense:approve", "expense:void", "journal:record", "books:lock",
   ]),
   // Staff Operasional = Finance Manager TANPA otoritas koreksi/persetujuan — approval (setujui/terbitkan/kembalikan),
   // pembatalan invoice terbit, dan pembalikan pembayaran tetap di tangan Finance Manager — serta TANPA dashboard;
@@ -109,6 +111,7 @@ export const NAV_ITEMS = [
   { href: "/payments", label: "Pembayaran", anyOf: ["payment:view"] },
   { href: "/expenses", label: "Pengeluaran", anyOf: ["expense:record", "expense:view_own", "finance:view"] },
   { href: "/cash", label: "Kas & Bank", anyOf: ["finance:view"] },
+  { href: "/journals", label: "Jurnal", anyOf: ["finance:view"] },
   { href: "/reports", label: "Laporan", anyOf: ["report:view"] },
   { href: "/statements", label: "Laporan Keuangan", anyOf: ["finance:view"] },
   { href: "/audit-log", label: "Audit Log", anyOf: ["audit:view"] },

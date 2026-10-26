@@ -125,7 +125,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
 
     await login(page, "finance");
     await page.goto("/dashboard");
-    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Laporan", "Laporan Keuangan", "Pengaturan"]);
+    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pengaturan"]);
     await page.goto("/expenses?status=PENDING");
     await expect(page.getByText(/pengeluaran menunggu persetujuan/)).toBeVisible();
 
@@ -252,5 +252,141 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await page.getByRole("link", { name: /Kas Kecil/ }).first().click();
     await expect(page.getByRole("heading", { name: "Buku kas — Kas Kecil" })).toBeVisible();
     await expect(page.getByText(/Pembayaran invoice .*Bima Satria Jaya/).first()).toBeVisible();
+  });
+  test("Finance Manager: jurnal manual seimbang → buku jurnal, neraca saldo, neraca, buku besar; pembalikan; penutupan buku", async ({ page }) => {
+    await login(page, "finance");
+    await page.goto("/journals");
+    await expect(page.getByRole("heading", { name: "Jurnal" })).toBeVisible();
+    // pembayaran/entri kas dari tes sebelumnya sudah muncul otomatis sebagai jurnal (tanpa input ganda)
+    await expect(page.getByTestId("journal-item").first()).toBeVisible();
+    await expect(page.getByTestId("journal-item").filter({ hasText: "Pembayaran invoice" }).first()).toBeVisible();
+
+    const journalDialog = async (desc: string, amount: string) => {
+      await page.getByRole("button", { name: "Catat jurnal" }).click();
+      const dlg = page.getByRole("dialog", { name: "Catat jurnal manual" });
+      await dlg.getByLabel("Keterangan").fill(desc);
+      await dlg.getByLabel("Akun baris 1").selectOption({ label: "6-2000 — Beban Penyusutan" });
+      await dlg.getByLabel("Debit baris 1").fill(amount);
+      return dlg;
+    };
+
+    // tidak seimbang → tombol simpan nonaktif dan selisih ditampilkan
+    let dlg = await journalDialog("Penyusutan E2E salah", "100000");
+    await dlg.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
+    await dlg.getByLabel("Kredit baris 2").fill("90000");
+    await expect(dlg.getByRole("status")).toContainText("Selisih");
+    await expect(dlg.getByRole("button", { name: "Simpan jurnal" })).toBeDisabled();
+    await dlg.getByLabel("Kredit baris 2").fill("100000");
+    await expect(dlg.getByRole("status")).toContainText("Seimbang");
+    await dlg.getByRole("button", { name: "Simpan jurnal" }).click();
+    await expect(page.getByText("Jurnal dicatat.")).toBeVisible();
+    const item = page.getByTestId("journal-item").filter({ hasText: "Penyusutan E2E salah" });
+    await expect(item).toContainText("6-2000");
+    await expect(item).toContainText("Akumulasi Penyusutan");
+
+    // koreksi lewat pembalikan (alasan wajib) — jurnal asli tetap tampil
+    await item.getByRole("button", { name: "Balikkan" }).click();
+    await page.getByRole("button", { name: "Balikkan jurnal" }).click();
+    await expect(page.getByRole("dialog").getByText(/Alasan minimal 5 karakter/)).toBeVisible();
+    await page.getByLabel("Alasan pembalikan").fill("Nominal keliru");
+    await page.getByRole("button", { name: "Balikkan jurnal" }).click();
+    await expect(page.getByText("Jurnal dibalikkan.")).toBeVisible();
+    await expect(page.getByTestId("journal-item").filter({ hasText: "Pembalikan: Penyusutan E2E salah" })).toContainText("Pembalikan");
+    await expect(page.getByTestId("journal-item").filter({ hasText: /^.*Penyusutan E2E salah/ }).first()).toBeVisible();
+
+    // jurnal yang benar
+    dlg = await journalDialog("Penyusutan E2E benar", "90000");
+    await dlg.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
+    await dlg.getByLabel("Kredit baris 2").fill("90000");
+    await dlg.getByRole("button", { name: "Simpan jurnal" }).click();
+    await expect(page.getByText("Jurnal dicatat.")).toBeVisible();
+    await page.getByLabel("Sumber").selectOption("MANUAL");
+    await page.getByRole("button", { name: "Terapkan" }).click();
+    await expect(page.getByTestId("journal-item")).toHaveCount(3);
+
+    // neraca saldo & neraca seimbang; laba rugi memuat beban penyusutan; buku besar akun
+    await page.goto("/statements?type=trial-balance");
+    await expect(page.getByRole("status").filter({ hasText: "Seimbang" })).toBeVisible();
+    await expect(page.getByRole("row", { name: /6-2000.*Beban Penyusutan/ })).toContainText("90.000");
+    await page.goto("/statements?type=balance-sheet");
+    await expect(page.getByText("Neraca seimbang")).toBeVisible();
+    await expect(page.getByText("1-2900 Akumulasi Penyusutan")).toBeVisible();
+    await page.goto("/statements?type=income-statement");
+    await expect(page.getByText("6-2000 Beban Penyusutan")).toBeVisible();
+    await page.goto("/statements?type=general-ledger");
+    await expect(page.getByText("Pilih akun untuk melihat buku besarnya.")).toBeVisible();
+    await page.locator('select[name="accountId"]').selectOption({ label: "6-2000 — Beban Penyusutan" });
+    await page.getByRole("button", { name: "Terapkan" }).click();
+    await expect(page.getByRole("heading", { name: /Buku Besar — 6-2000/ })).toBeVisible();
+    await expect(page.getByRole("row", { name: /Total & saldo akhir/ })).toContainText("90.000");
+    // neraca per akhir tahun lalu (tanggal akhir saja) tidak error
+    await page.goto(`/statements?type=balance-sheet&to=${wib().slice(0, 4)}-01-01`);
+    await expect(page.getByText(/Neraca seimbang|NERACA TIDAK SEIMBANG/)).toBeVisible();
+    await expect(page.getByText("Tanggal awal tidak boleh setelah tanggal akhir")).toHaveCount(0);
+
+    // ekspor neraca saldo & buku besar
+    const tbCsv = await page.request.get(`/api/finance/statements/trial-balance?format=csv&to=${wib()}`);
+    expect(tbCsv.status()).toBe(200);
+    expect((await tbCsv.body()).toString("utf8")).toContain("Neraca Saldo");
+    expect((await page.request.get("/api/finance/statements/general-ledger?format=csv")).status()).toBe(422); // tanpa akun
+    expect((await page.request.get("/api/finance/journal-book?source=BUKAN")).status()).toBe(422);
+  });
+
+  test("Penutupan buku: Finance menutup sampai kemarin → jurnal bertanggal ditutup ditolak (UI + API); dicabut → diterima; staff tidak punya akses", async ({ page, browser }) => {
+    await login(page, "finance");
+    await page.goto("/journals");
+    await expect(page.getByText("Buku belum ditutup.")).toBeVisible();
+    const yesterday = new Date(Date.now() + 7 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
+    await page.getByRole("button", { name: "Tutup buku" }).click();
+    let dlg = page.getByRole("dialog", { name: "Penutupan buku" });
+    await dlg.getByLabel("Buku ditutup sampai tanggal").fill(yesterday);
+    await expect(dlg.getByRole("button", { name: "Simpan" })).toBeDisabled(); // alasan wajib
+    await dlg.getByLabel("Alasan").fill("Laporan bulanan E2E final");
+    await dlg.getByRole("button", { name: "Simpan" }).click();
+    await expect(page.getByText("Buku ditutup.")).toBeVisible();
+    await expect(page.getByText(/Buku ditutup sampai/)).toBeVisible();
+
+    // jurnal bertanggal di periode tertutup ditolak dengan pesan jelas
+    await page.getByRole("button", { name: "Catat jurnal" }).click();
+    const jd = page.getByRole("dialog", { name: "Catat jurnal manual" });
+    await jd.getByLabel("Tanggal").fill(yesterday);
+    await jd.getByLabel("Keterangan").fill("Jurnal mundur E2E");
+    await jd.getByLabel("Akun baris 1").selectOption({ label: "6-2000 — Beban Penyusutan" });
+    await jd.getByLabel("Debit baris 1").fill("1000");
+    await jd.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
+    await jd.getByLabel("Kredit baris 2").fill("1000");
+    await jd.getByRole("button", { name: "Simpan jurnal" }).click();
+    await expect(jd.getByRole("alert").filter({ hasText: /Buku sudah ditutup sampai/ })).toBeVisible();
+    await jd.getByRole("button", { name: "Batal" }).click();
+
+    // API: pembayaran/entri bertanggal mundur juga ditolak; bertanggal hari ini diterima
+    const accts = (await (await page.request.get("/api/finance/cash-accounts/options")).json()).data as { id: string }[];
+    const cats = (await (await page.request.get("/api/finance/coa")).json()).data as { id: string; code: string }[];
+    const entry = (entryDate: string) => page.request.post("/api/finance/entries", { headers: ORIGIN, data: { entryDate, cashAccountId: accts[0]!.id, counterAccountId: cats.find((c) => c.code === "6-1600")!.id, amount: 5000, description: "ATK uji penutupan" } });
+    const back = await entry(yesterday);
+    expect(back.status()).toBe(422);
+    expect((await back.json()).error.message).toMatch(/Buku sudah ditutup sampai/);
+    expect((await entry(wib())).status()).toBe(201);
+
+    // staff: tidak dapat membaca/mengubah penutupan maupun jurnal
+    const sctx = await browser.newContext();
+    const sp = await sctx.newPage();
+    await login(sp, "staff");
+    expect((await sp.goto("/journals"))!.status()).toBe(404);
+    expect((await sp.request.get("/api/finance/books-lock")).status()).toBe(403);
+    expect((await sp.request.put("/api/finance/books-lock", { headers: ORIGIN, data: { lockedThrough: null, reason: "coba-coba staff" } })).status()).toBe(403);
+    expect((await sp.request.get("/api/finance/journal-book")).status()).toBe(403);
+    expect((await sp.request.post("/api/finance/journals", { headers: ORIGIN, data: {} })).status()).toBe(403);
+    await sctx.close();
+
+    // cabut penutupan → jurnal mundur diterima
+    await page.reload();
+    await page.getByRole("button", { name: "Ubah penutupan" }).click();
+    dlg = page.getByRole("dialog", { name: "Penutupan buku" });
+    await dlg.getByLabel("Alasan").fill("Audit selesai, kunci dicabut");
+    await dlg.getByRole("button", { name: "Cabut penutupan" }).click();
+    await expect(page.getByText("Penutupan buku dicabut.")).toBeVisible();
+    await expect(page.getByText("Buku belum ditutup.")).toBeVisible();
+    expect((await entry(yesterday)).status()).toBe(201);
   });
 });

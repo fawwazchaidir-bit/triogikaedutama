@@ -113,6 +113,13 @@ enum LedgerEntryType {
   REVERSAL
 }
 
+enum JournalKind {
+  /// Jurnal umum / penyesuaian (mis. penyusutan, koreksi).
+  GENERAL
+  /// Jurnal saldo awal akun non-kas (aset tetap, utang, modal); bertanggal tepat pada tanggal mulai pembukuan.
+  OPENING
+}
+
 enum CashEntryStatus {
   PENDING
   APPROVED
@@ -151,6 +158,7 @@ model User {
   entriesApproved   CashEntry[]    @relation("CashEntryApprovedBy")
   entriesRejected   CashEntry[]    @relation("CashEntryRejectedBy")
   transfersCreated  CashTransfer[] @relation("CashTransferCreatedBy")
+  journalsCreated   JournalEntry[] @relation("JournalCreatedBy")
   auditLogs         AuditLog[]
 
   @@map("users")
@@ -305,6 +313,9 @@ model CompanySettings {
   showSignature   Boolean         @default(false)
   rupiahStyle     RupiahStyle     @default(REFERENCE)
   terbilangSource TerbilangSource @default(TOTAL)
+
+  /// Penutupan buku: pembayaran, entri kas, transfer, dan jurnal bertanggal ≤ tanggal ini ditolak (kosong = tidak ada penutupan).
+  booksLockedThrough DateTime? @db.Date
 
   updatedAt DateTime @updatedAt
 
@@ -562,6 +573,7 @@ model CoaAccount {
 
   cashAccounts CashAccount[]
   entries      CashEntry[]
+  journalLines JournalLine[]
 
   @@map("coa_accounts")
 }
@@ -654,6 +666,49 @@ model CashTransfer {
 
   @@index([transferDate])
   @@map("cash_transfers")
+}
+
+/// Jurnal MANUAL (umum/penyesuaian/saldo awal). Jurnal dari kas (pembayaran invoice, entri kas, transfer, saldo awal kas) TIDAK disimpan di sini:
+/// diturunkan langsung dari tabel sumbernya sehingga tidak mungkin berselisih. Append-only & seimbang (dijaga trigger DB).
+model JournalEntry {
+  id                String          @id @default(uuid()) @db.Uuid
+  /// Nomor urut tampilan (JU-000123); celah mungkin terjadi bila transaksi dibatalkan.
+  numberSeq         Int             @unique @default(autoincrement())
+  kind              JournalKind     @default(GENERAL)
+  entryType         LedgerEntryType @default(ENTRY)
+  reversesJournalId String?         @unique @db.Uuid
+  journalDate       DateTime        @db.Date
+  description       String
+  reference         String?
+  /// Wajib untuk REVERSAL.
+  reason            String?
+  createdById       String          @db.Uuid
+  createdAt         DateTime        @default(now())
+
+  createdBy User          @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  reverses  JournalEntry? @relation("JournalReversal", fields: [reversesJournalId], references: [id], onDelete: Restrict)
+  reversal  JournalEntry? @relation("JournalReversal")
+  lines     JournalLine[]
+
+  @@index([journalDate])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id        String  @id @default(uuid()) @db.Uuid
+  journalId String  @db.Uuid
+  lineNo    Int
+  accountId String  @db.Uuid
+  debit     BigInt  @default(0)
+  credit    BigInt  @default(0)
+  memo      String?
+
+  journal JournalEntry @relation(fields: [journalId], references: [id], onDelete: Restrict)
+  account CoaAccount   @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([journalId, lineNo])
+  @@index([accountId])
+  @@map("journal_lines")
 }
 
 // ───────────────────────────── Audit ─────────────────────────────

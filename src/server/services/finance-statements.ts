@@ -7,6 +7,7 @@ import { parseInput } from "../validate";
 import { assertCan, type Actor } from "../actor";
 import { dateToIso } from "../json";
 import { loadStmtData } from "./finance-data";
+import { getBalanceSheet, getGeneralLedger, getGlIncomeStatement, getTrialBalance } from "./finance-ledger";
 import type { ReportTable } from "../export";
 import {
   accountBalance, buildAccountLedger, buildCashFlow, buildIncomeStatement,
@@ -20,20 +21,21 @@ import { isoDate, uuid } from "@/lib/validation/common";
  * Laporan MANAJEMEN dari data sistem — bukan laporan keuangan SAK EMKM yang lengkap (Laporan Posisi Keuangan/Neraca dan
  * Catatan belum tersedia) dan bukan SPT/laporan pajak. Pajak (PPN, PPh 23 dipotong pelanggan, PPh badan) belum dipisah.
  */
-export const STATEMENT_TYPES = ["cash-flow", "income-statement"] as const;
+export const STATEMENT_TYPES = ["cash-flow", "income-statement", "balance-sheet", "trial-balance", "general-ledger"] as const;
 export type StatementType = (typeof STATEMENT_TYPES)[number];
 
-export const statementQuerySchema = z.object({ from: isoDate.optional(), to: isoDate.optional() });
+export const statementQuerySchema = z.object({ from: isoDate.optional(), to: isoDate.optional(), accountId: uuid.optional() });
 
 export const STATEMENT_DISCLAIMER =
-  "Laporan manajemen BASIS KAS dari data sistem (pendapatan diakui saat uang diterima; beban saat dibayar). Bukan laporan keuangan SAK EMKM lengkap " +
-  "(Laporan Posisi Keuangan belum tersedia) dan bukan laporan pajak: PPN, PPh 23 yang dipotong pelanggan, dan PPh badan belum dipisahkan. Tinjau dengan akuntan sebelum dipakai ke pihak eksternal.";
+  "Laporan manajemen BASIS KAS dari buku besar sistem (pendapatan diakui saat uang diterima; beban saat dibayar; tanpa piutang/utang usaha). Disusun mengikuti struktur SAK EMKM " +
+  "namun BUKAN laporan keuangan resmi lengkap (Catatan atas Laporan Keuangan belum ada) dan bukan laporan pajak: PPN, PPh 23 yang dipotong pelanggan, dan PPh badan belum dipisahkan. Tinjau dengan akuntan sebelum dipakai ke pihak eksternal.";
 
 function range(raw: unknown): { from: string; to: string; today: string } {
   const f = parseInput(statementQuerySchema, raw ?? {});
   const today = todayIso(env().APP_TIMEZONE);
-  const from = f.from ?? `${today.slice(0, 4)}-01-01`;
   const to = f.to ?? today;
+  // Tanpa tanggal awal: 1 Januari pada tahun tanggal akhir (neraca per akhir tahun lalu tidak boleh gagal karena "awal" jatuh di tahun ini).
+  const from = f.from ?? `${to.slice(0, 4)}-01-01`;
   if (from > to) throw Errors.validation("Tanggal awal tidak boleh setelah tanggal akhir.", { from: "Harus ≤ tanggal akhir" });
   if (to > today) throw Errors.validation("Tanggal akhir tidak boleh di masa depan.", { to: "Tidak boleh di masa depan" });
   return { from, to, today };
@@ -122,6 +124,7 @@ export async function runStatement(actor: Actor, type: string, raw: unknown = {}
   assertCan(actor, "finance:view");
   if (!(STATEMENT_TYPES as readonly string[]).includes(type)) throw Errors.notFound("Laporan");
   const { from, to } = range(raw);
+  const accountId = parseInput(statementQuerySchema, raw ?? {}).accountId;
   const periodLabel = `${formatDateLong(from)} – ${formatDateLong(to)}`;
   const base = { disclaimer: STATEMENT_DISCLAIMER, periodLabel, generatedAt: new Date().toISOString(), totals: null };
   const columns = [{ key: "item", label: "Uraian", type: "text" as const, width: 58 }, { key: "amount", label: "Jumlah (Rp)", type: "money" as const, width: 22 }];
@@ -146,16 +149,51 @@ export async function runStatement(actor: Actor, type: string, raw: unknown = {}
     if (r.notInBalances !== 0) rows.push(line("Catatan: penerimaan invoice yang tidak masuk saldo akun mana pun (belum dialokasikan / sebelum saldo awal)", r.notInBalances));
     return { type, title: "Laporan Arus Kas (Basis Kas)", description: "Arus kas operasi, investasi, pendanaan dan rekonsiliasi saldo kas & bank.", columns, rows, ...base };
   }
-  const r = buildIncomeStatement(await loadStmtData(to), from, to);
-  const rows: Row[] = [
-    line("Pendapatan usaha (penerimaan invoice, neto pembalikan)", r.revenue),
-    head("Beban langsung program"), ...lines(r.directCosts), line("Jumlah beban langsung program", r.totalDirectCosts),
-    line("Laba kotor program", r.grossProfit),
-    head("Beban operasional"), ...lines(r.operatingCosts), line("Jumlah beban operasional", r.totalOperatingCosts),
-    line("Laba (rugi) usaha", r.operatingProfit),
-    head("Pendapatan lain-lain"), ...lines(r.otherIncome), line("Jumlah pendapatan lain-lain", r.totalOtherIncome),
-    line("Laba (rugi) bersih sebelum pajak penghasilan", r.netProfitBeforeTax),
-  ];
-  if (r.receiptsOnTaxedInvoices !== 0) rows.push(line("Catatan: penerimaan atas invoice yang memuat pajak (belum dipisah dari pendapatan)", r.receiptsOnTaxedInvoices));
-  return { type, title: "Laporan Laba Rugi (Basis Kas)", description: "Pendapatan diakui saat uang diterima; beban saat dibayar.", columns, rows, ...base };
+  if (type === "income-statement") {
+    const r = await getGlIncomeStatement(actor, { from, to });
+    const rows: Row[] = [
+      head("Pendapatan usaha"), ...lines(r.revenue), line("Jumlah pendapatan usaha", r.totalRevenue),
+      head("Beban langsung program"), ...lines(r.directCosts), line("Jumlah beban langsung program", r.totalDirectCosts),
+      line("Laba kotor program", r.grossProfit),
+      head("Beban operasional"), ...lines(r.operatingCosts), line("Jumlah beban operasional", r.totalOperatingCosts),
+      line("Laba (rugi) usaha", r.operatingProfit),
+      head("Pendapatan lain-lain"), ...lines(r.otherIncome), line("Jumlah pendapatan lain-lain", r.totalOtherIncome),
+      line("Laba (rugi) bersih sebelum pajak penghasilan", r.profitBeforeTax),
+    ];
+    if (r.incomeTax.length) rows.push(head("Beban pajak penghasilan"), ...lines(r.incomeTax), line("Laba (rugi) bersih setelah pajak penghasilan", r.netProfit));
+    const taxed = (await getIncomeStatement(actor, { from, to })).receiptsOnTaxedInvoices;
+    if (taxed !== 0) rows.push(line("Catatan: penerimaan atas invoice yang memuat pajak (belum dipisah dari pendapatan)", taxed));
+    return { type, title: "Laporan Laba Rugi (Basis Kas)", description: "Dari buku besar: pendapatan diakui saat uang diterima; beban saat dibayar.", columns, rows, ...base };
+  }
+  if (type === "balance-sheet") {
+    const r = await getBalanceSheet(actor, { to });
+    const rows: Row[] = [
+      head("ASET"), head("Aset lancar"), ...lines(r.currentAssets), head("Aset tetap"), ...lines(r.fixedAssets), ...(r.otherAssets.length ? [head("Aset lainnya"), ...lines(r.otherAssets)] : []),
+      line("Jumlah aset", r.totalAssets),
+      head("LIABILITAS"), head("Liabilitas jangka pendek"), ...lines(r.shortTermLiabilities), head("Liabilitas jangka panjang"), ...lines(r.longTermLiabilities), ...(r.otherLiabilities.length ? lines(r.otherLiabilities) : []),
+      line("Jumlah liabilitas", r.totalLiabilities),
+      head("EKUITAS"), ...lines(r.equity), line("   Saldo laba tahun-tahun sebelumnya (hasil usaha)", r.retainedEarningsPrior), line("   Laba (rugi) tahun berjalan", r.currentYearProfit),
+      line("Jumlah ekuitas", r.totalEquity), line("Jumlah liabilitas dan ekuitas", r.totalLiabilities + r.totalEquity),
+      line("Selisih (aset − liabilitas − ekuitas); harus 0", r.difference),
+    ];
+    return { type, title: "Laporan Posisi Keuangan / Neraca (Basis Kas)", description: `Per ${formatDateLong(to)}`, columns, rows, ...base, periodLabel: `Per ${formatDateLong(to)}` };
+  }
+  if (type === "trial-balance") {
+    const r = await getTrialBalance(actor, { to });
+    return {
+      type, title: "Neraca Saldo", description: "Saldo seluruh akun; total debit harus sama dengan total kredit.",
+      columns: [{ key: "code", label: "Kode", type: "text" as const, width: 10 }, { key: "name", label: "Nama akun", type: "text" as const, width: 52 }, { key: "debit", label: "Debit (Rp)", type: "money" as const, width: 20 }, { key: "credit", label: "Kredit (Rp)", type: "money" as const, width: 20 }],
+      rows: r.rows.map((x) => ({ code: x.code, name: x.name, debit: x.debit, credit: x.credit })),
+      ...base, periodLabel: `Per ${formatDateLong(to)}`, totals: { code: "TOTAL", name: null, debit: r.totalDebit, credit: r.totalCredit },
+    };
+  }
+  // general-ledger
+  if (!accountId) throw Errors.validation("Pilih akun untuk buku besar.", { accountId: "Wajib dipilih" });
+  const g = await getGeneralLedger(actor, { accountId, from, to });
+  return {
+    type, title: `Buku Besar — ${g.account.code} ${g.account.name}`, description: "Mutasi akun dengan saldo berjalan menurut sisi normal akun.",
+    columns: [{ key: "date", label: "Tanggal", type: "date" as const, width: 13 }, { key: "ref", label: "Sumber", type: "text" as const, width: 26 }, { key: "desc", label: "Uraian", type: "text" as const, width: 48 }, { key: "debit", label: "Debit (Rp)", type: "money" as const, width: 18 }, { key: "credit", label: "Kredit (Rp)", type: "money" as const, width: 18 }, { key: "balance", label: "Saldo (Rp)", type: "money" as const, width: 18 }],
+    rows: [{ date: g.from, ref: "", desc: "Saldo awal periode", debit: null, credit: null, balance: g.opening }, ...g.rows.map((r) => ({ date: r.date, ref: r.sourceLabel, desc: r.description, debit: r.debit || null, credit: r.credit || null, balance: r.balance }))],
+    ...base, totals: { date: "TOTAL", ref: null, desc: null, debit: g.totalDebit, credit: g.totalCredit, balance: g.closing },
+  };
 }

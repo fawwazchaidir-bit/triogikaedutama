@@ -29,6 +29,7 @@ export const COA_SEED: readonly CoaSeed[] = [
   sys("1-1200", "Bank", "ASET"),
   sys("1-1300", "Piutang Usaha", "ASET"),
   sys("1-1400", "Uang Muka Pajak (PPh dipotong pelanggan)", "ASET"),
+  sys("1-1450", "Penerimaan Invoice Belum Dialokasikan ke Kas/Bank", "ASET"),
   { code: "1-2100", name: "Peralatan Kantor", type: "ASET", section: "INVESTASI", manualEntry: true, isSystem: false },
   { code: "1-2200", name: "Peralatan Pelatihan & Praktik", type: "ASET", section: "INVESTASI", manualEntry: true, isSystem: false },
   { code: "1-2300", name: "Kendaraan", type: "ASET", section: "INVESTASI", manualEntry: true, isSystem: false },

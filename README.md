@@ -16,7 +16,8 @@ terbilang, PDF, pembayaran, dashboard, dan laporan.
 | **Snapshot** | Invoice terbit membekukan pelanggan, lembaga, rekening, harga, dan pajak. Mengubah master tidak mengubah invoice lama — dijaga aplikasi **dan** trigger database. |
 | **Pembayaran** | Buku besar *append-only*; pembayaran sebagian/lunas; koreksi lewat pembalikan (tidak ada penghapusan); bukti bayar; kelebihan bayar ditolak. |
 | **PDF** | **A4 landscape** meniru invoice referensi Trilogika (judul INVOICE di tengah, blok Number/Inv. Date/Payment Term/Due Date mepet kanan); *Product Description* dinamis (nama peserta, dll) sedangkan *Remark* tetap mengikuti program; deskripsi panjang & banyak item membungkus otomatis; header tabel berulang; **watermark DRAFT** pada dokumen yang belum diverifikasi (tanpa nomor, tanda tangan, dan cap — baru muncul setelah disetujui Finance Manager), watermark DIBATALKAN; logo, cap, tanda tangan dari Pengaturan; nama file otomatis `Invoice_00434_CV_Bima_Satria_Jaya.pdf`. |
-| **Keuangan (tahap 1, basis kas)** | Pengeluaran (staff mengajukan → Finance Manager menyetujui, bukti terlampir), Kas & Bank dengan **saldo awal manual** dan buku kas bersaldo berjalan, transfer antar akun, penerimaan non-operasional, **Laporan Laba Rugi & Arus Kas (basis kas, SAK EMKM)** + ekspor CSV/XLSX, bagan akun usulan SAK EMKM. Pembayaran invoice otomatis masuk akun kas/bank. Entri berlaku tidak dapat diubah (pembalikan). Neraca, jurnal berpasangan, pajak: tahap berikutnya. |
+| **Keuangan (tahap 1, basis kas)** | Pengeluaran (staff mengajukan → Finance Manager menyetujui, bukti terlampir), Kas & Bank dengan **saldo awal manual** dan buku kas bersaldo berjalan, transfer antar akun, penerimaan non-operasional, **Laporan Laba Rugi & Arus Kas (basis kas, SAK EMKM)** + ekspor CSV/XLSX, bagan akun usulan SAK EMKM. Pembayaran invoice otomatis masuk akun kas/bank. Entri berlaku tidak dapat diubah (pembalikan). Pajak: tahap berikutnya. |
+| **Keuangan (tahap 2, buku besar)** | **Buku jurnal** (jurnal kas diturunkan otomatis, tidak mungkin berselisih), **jurnal manual** seimbang (penyusutan, koreksi, saldo awal non-kas; koreksi lewat pembalikan), **buku besar per akun, neraca saldo, neraca (Laporan Posisi Keuangan)**, laba rugi dari buku besar, **penutupan buku** per periode. Dijaga trigger database (jurnal seimbang saat commit, append-only), diuji 4 putaran + fuzz dengan oracle SQL. |
 | **Master data** | Pelanggan (autocomplete, pencegahan duplikasi, arsip, riwayat & piutang), produk/layanan (template deskripsi otomatis), pajak, rekening bank. |
 | **Dashboard & laporan** | 10 metrik dengan definisi eksplisit (nilai invoice ≠ kas ≠ piutang), grafik tren, 9 laporan + ekspor CSV/XLSX. |
 | **Keamanan** | Login berperan (Administrator / Finance Manager / Staff Operasional; Staff = Finance Manager tanpa approval & dashboard, sehingga input ↔ verifikasi terpisah) ditegakkan di backend, sesi ber-hash, scrypt, rate limit login, CSRF, header keamanan, validasi unggahan berdasarkan isi file, audit log append-only. |
@@ -65,7 +66,7 @@ Panduan lengkap: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 | `npm run db:migrate:dev` | Buat migrasi baru saat mengembangkan skema |
 | `npm run db:seed` · `db:seed:dev` | Seed produksi · seed demo (lokal saja) |
 | `npm run db:backup` · `db:restore` | Backup/restore PostgreSQL (lihat DEPLOYMENT) |
-| `npm run db:reconcile` | Rekonsiliasi integritas (cache pembayaran = ledger, identitas total, nomor, dst.) |
+| `npm run db:reconcile` | Rekonsiliasi integritas (cache pembayaran = ledger, identitas total, nomor, kas, jurnal seimbang & akun cadangan, dst.) |
 | `npm run user:create` | Buat akun dari CLI (password lewat env `NEW_USER_PASSWORD`) |
 
 ## Struktur proyek

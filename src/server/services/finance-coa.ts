@@ -109,7 +109,9 @@ export async function updateCoaAccount(actor: Actor, id: string, raw: unknown): 
     if (structural) {
       if (cur.isSystem) throw Errors.conflict("Akun sistem tidak boleh diubah kode/jenisnya.");
       if (cur._count.entries + cur._count.cashAccounts > 0) throw Errors.conflict("Akun sudah dipakai transaksi: kode/jenis tidak dapat diubah. Nonaktifkan lalu buat akun baru.");
+      if (await tx.journalLine.findFirst({ where: { accountId: id }, select: { id: true } })) throw Errors.conflict("Akun sudah memiliki jurnal: kode/jenis tidak dapat diubah (laporan lama akan ikut berubah). Nonaktifkan lalu buat akun baru.");
     }
+    if (input.manualEntry === true && !cur.manualEntry && cur._count.cashAccounts > 0) throw Errors.conflict("Akun dipetakan ke akun kas/bank dan tidak dapat dipilih pada entri kas manual.");
     if (input.isActive === false) {
       if (cur.isSystem) throw Errors.conflict("Akun sistem tidak dapat dinonaktifkan.");
       if (await tx.cashAccount.findFirst({ where: { coaAccountId: id, isActive: true }, select: { id: true } })) {

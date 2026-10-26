@@ -16,6 +16,7 @@ import { todayIso } from "@/lib/format";
 import { isoDate, optionalText, requiredText, rupiah, uuid } from "@/lib/validation/common";
 import type { Paged } from "@/lib/types";
 import type { CashEntryDto, CashTransferDto } from "@/lib/finance-types";
+import { assertBooksOpen } from "./books-lock";
 
 /**
  * ═══════════ ENTRI KAS MANUAL (basis kas) ═══════════
@@ -78,9 +79,13 @@ export async function createEntry(actor: Actor, raw: unknown): Promise<CashEntry
   if (input.entryDate > today) throw Errors.validation("Tanggal tidak boleh di masa depan.", { entryDate: "Tidak boleh di masa depan" });
 
   const id = await transaction(async (tx) => {
+    await assertBooksOpen(tx, input.entryDate, "entri kas", "entryDate");
     const counter = await tx.coaAccount.findUnique({ where: { id: input.counterAccountId } });
     if (!counter || !counter.isActive || !counter.manualEntry) {
       throw Errors.validation("Akun kategori tidak tersedia untuk pencatatan manual.", { counterAccountId: "Pilih kategori yang tersedia" });
+    }
+    if (await tx.cashAccount.findFirst({ where: { coaAccountId: counter.id }, select: { id: true } })) {
+      throw Errors.validation("Akun kategori ini dipetakan ke akun kas/bank. Gunakan transfer antar akun.", { counterAccountId: "Pilih kategori yang tersedia" });
     }
     const isExpense = counter.type === "BEBAN";
     // Izin menurut jenis entri (ditegakkan di service, bukan hanya UI).
@@ -131,6 +136,7 @@ export async function approveEntry(actor: Actor, id: string): Promise<CashEntryD
     const e = await tx.cashEntry.findUniqueOrThrow({ where: { id }, include: { cashAccount: true, counterAccount: true } });
     if (e.entryType !== "ENTRY" || e.status !== "PENDING") throw Errors.conflict(e.status === "APPROVED" ? "Entri ini sudah disetujui." : e.status === "REJECTED" ? "Entri ini sudah ditolak." : "Entri tidak dapat disetujui.");
     if (e.createdById === actor.userId) throw Errors.forbidden("Anda tidak dapat menyetujui entri yang Anda catat sendiri.");
+    await assertBooksOpen(tx, dateToIso(e.entryDate), "pengeluaran ini", "entryDate", "disetujui; tolak pengajuan lalu catat ulang dengan tanggal baru");
     await shareLockCashAccount(tx, e.cashAccountId);
     const acct = await tx.cashAccount.findUniqueOrThrow({ where: { id: e.cashAccountId } });
     if (!acct.isActive) throw Errors.conflict("Akun kas/bank sudah dinonaktifkan. Tolak entri ini lalu catat ulang pada akun aktif.");
@@ -273,6 +279,7 @@ export async function createTransfer(actor: Actor, raw: unknown): Promise<CashTr
   if (input.transferDate > today) throw Errors.validation("Tanggal tidak boleh di masa depan.", { transferDate: "Tidak boleh di masa depan" });
   if (input.fromAccountId === input.toAccountId) throw Errors.validation("Akun asal dan tujuan harus berbeda.", { toAccountId: "Harus berbeda dari akun asal" });
   const id = await transaction(async (tx) => {
+    await assertBooksOpen(tx, input.transferDate, "transfer", "transferDate");
     for (const aid of [input.fromAccountId, input.toAccountId].sort()) await shareLockCashAccount(tx, aid);
     const [from, to] = await Promise.all([
       tx.cashAccount.findUniqueOrThrow({ where: { id: input.fromAccountId } }), tx.cashAccount.findUniqueOrThrow({ where: { id: input.toAccountId } }),

@@ -1,0 +1,9 @@
+import { z } from "zod";
+import { created, readJson, route } from "@/server/http";
+import { parseQuery } from "@/server/query";
+import { createJournal, listManualJournals } from "@/server/services/journals";
+import { isoDate } from "@/lib/validation/common";
+
+const query = z.object({ from: isoDate.optional(), to: isoDate.optional(), page: z.coerce.number().int().min(1).optional(), pageSize: z.coerce.number().int().min(1).max(100).optional() });
+export const GET = route(({ req, actor }) => listManualJournals(actor, parseQuery(req, query)));
+export const POST = route(async ({ req, actor }) => created(await createJournal(actor, await readJson(req, z.unknown()))));

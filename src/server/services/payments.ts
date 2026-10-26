@@ -14,6 +14,7 @@ import { isValidIsoDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
 import { todayIso } from "@/lib/format";
 import { isoToDate, dateToIso } from "../json";
+import { assertBooksOpen } from "./books-lock";
 import { isoDate, optionalText, requiredText, rupiah, uuid } from "@/lib/validation/common";
 import type { Paged, PaymentDto } from "@/lib/types";
 
@@ -81,6 +82,7 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
 
   return transaction(async (tx) => {
     await lockInvoice(tx, input.invoiceId);
+    await assertBooksOpen(tx, input.paymentDate, "pembayaran", "paymentDate");
     const inv = await tx.invoice.findUniqueOrThrow({ where: { id: input.invoiceId } });
     if (inv.status !== "ISSUED") {
       throw Errors.conflict(inv.status === "DRAFT" || inv.status === "SUBMITTED" ? "Pembayaran hanya dapat dicatat pada invoice yang sudah diterbitkan." : "Invoice sudah dibatalkan; pembayaran tidak dapat dicatat.");

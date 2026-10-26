@@ -48,7 +48,10 @@ REST JSON di bawah `/api`. Dipakai oleh UI aplikasi; dapat dipakai pihak lain **
 | `GET/POST /api/finance/cash-accounts` · `PATCH …/:id` · `GET …/options` | `finance:view` · `finance:manage` · (opsi: pencatat) | Akun kas/bank + saldo awal; `options` = pilihan aktif tanpa saldo |
 | `GET/POST /api/finance/coa` · `PATCH …/:id` | `finance:view`/`expense:record` · `finance:manage` | Bagan akun (staff hanya melihat kategori beban yang boleh dipilih) |
 | `GET /api/finance/ledger?accountId&from&to` | `finance:view` | Buku kas satu akun dengan saldo berjalan |
-| `GET /api/finance/statements/:type?format=json\|csv\|xlsx&from&to` | `finance:view` | `cash-flow`, `income-statement` (basis kas); ekspor dicatat di audit |
+| `GET /api/finance/statements/:type?format=json\|csv\|xlsx&from&to&accountId` | `finance:view` | `cash-flow`, `income-statement` (dari buku besar), `balance-sheet`, `trial-balance` (per `to`), `general-ledger` (wajib `accountId`); tanpa `from` = 1 Jan tahun `to`; ekspor dicatat di audit |
+| `GET/POST /api/finance/journals` · `POST …/:id/reverse` | `finance:view` · `journal:record` · `expense:void` + `journal:record` | Jurnal manual (`kind` GENERAL/OPENING, `lines[{accountId,debit,credit,memo}]` seimbang); pembalikan butuh `{ reason }` |
+| `GET /api/finance/journal-book?from&to&source&page` | `finance:view` | Buku jurnal gabungan (saldo awal kas, pembayaran, entri kas, transfer, manual) |
+| `GET/PUT /api/finance/books-lock` | `finance:view` · `books:lock` | Penutupan buku: `{ lockedThrough: "YYYY-MM-DD"\|null, reason }` (tanggal < hari ini) |
 | `POST /api/finance/proof` | `expense:record` | Unggah bukti pengeluaran (PNG/JPEG/PDF) |
 | `GET /api/files/:id` | tergantung jenis | Logo/cap/tanda tangan/bukti bayar (diunduh, bukan dirender inline) |
 

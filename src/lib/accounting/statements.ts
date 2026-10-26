@@ -159,8 +159,11 @@ export interface IncomeStatement {
 export const isDirectCost = (code: string) => code.startsWith("5");
 
 export function buildIncomeStatement(data: StmtData, from: string, to: string): IncomeStatement {
-  const revenue = data.payments.filter((p) => inRange(p.date, from, to)).reduce((s, p) => s + p.amount, 0);
-  const receiptsOnTaxedInvoices = data.payments.filter((p) => inRange(p.date, from, to) && p.onTaxedInvoice).reduce((s, p) => s + p.amount, 0);
+  // Penerimaan yang mendahului tanggal saldo awal akunnya adalah PRA-PEMBUKUAN (sudah termasuk saldo awal) — tidak menjadi pendapatan periode pembukuan.
+  const open = new Map(data.accounts.map((a) => [a.id, a.openingDate]));
+  const counted = data.payments.filter((p) => inRange(p.date, from, to) && !(p.accountId && open.has(p.accountId) && p.date < open.get(p.accountId)!));
+  const revenue = counted.reduce((s, p) => s + p.amount, 0);
+  const receiptsOnTaxedInvoices = counted.filter((p) => p.onTaxedInvoice).reduce((s, p) => s + p.amount, 0);
   const rows = data.entries.filter((e) => inRange(e.date, from, to)).map((e) => ({ counter: e.counter, signed: e.direction === "IN" ? e.amount : -e.amount }));
   // Beban dilaporkan POSITIF (pengeluaran neto pembalikan).
   const costs = groupByCounter(rows.filter((r) => r.counter.type === "BEBAN")).map((l) => ({ ...l, amount: -l.amount }));

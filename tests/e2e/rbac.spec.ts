@@ -62,7 +62,7 @@ test.describe("RBAC end-to-end", () => {
 
   test("Finance Manager: dapat menyetujui/bayar/laporan; tidak dapat mengelola pengguna, penomoran, pajak, atau audit log", async ({ page }) => {
     await login(page, "finance");
-    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Laporan", "Laporan Keuangan", "Pengaturan"]);
+    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pengaturan"]);
     for (const [method, url] of [["get", "/api/users"], ["get", "/api/audit-logs"], ["get", "/api/tax"]] as const) {
       expect((await page.request[method](url)).status(), url).toBe(403);
     }
