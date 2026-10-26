@@ -9,7 +9,7 @@ import { actorCan, assertCan, type Actor } from "../actor";
 import { writeAudit } from "../audit";
 import { dateToIso, isoToDate } from "../json";
 import { shareLockCashAccount } from "./cash-accounts";
-import { CASH_AMOUNT_MAX } from "@/lib/accounting/limits";
+import { CASH_AMOUNT_MAX, PROOF_REQUIRED_ABOVE } from "@/lib/accounting/limits";
 import { isValidIsoDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
 import { todayIso } from "@/lib/format";
@@ -88,6 +88,10 @@ export async function createEntry(actor: Actor, raw: unknown): Promise<CashEntry
     if (isExpense && input.direction !== "OUT") throw Errors.validation("Pengeluaran harus berarah keluar. Koreksi dilakukan lewat pembalikan.", { direction: "Pengeluaran = keluar" });
     if (counter.type === "PENDAPATAN" && input.direction !== "IN") throw Errors.validation("Pendapatan harus berarah masuk.", { direction: "Pendapatan = masuk" });
 
+    // Bukti transaksi wajib untuk setiap uang KELUAR di atas ambang (pengeluaran, pembelian aset, prive, pembayaran pinjaman).
+    if (input.direction === "OUT" && input.amount > PROOF_REQUIRED_ABOVE && !input.proofFileId) {
+      throw Errors.validation(`Pengeluaran di atas ${rp(PROOF_REQUIRED_ABOVE)} wajib melampirkan bukti transaksi.`, { proofFileId: `Bukti wajib untuk pengeluaran di atas ${rp(PROOF_REQUIRED_ABOVE)}` });
+    }
     await shareLockCashAccount(tx, input.cashAccountId);
     const acct = await tx.cashAccount.findUniqueOrThrow({ where: { id: input.cashAccountId } });
     if (!acct.isActive) throw Errors.validation("Akun kas/bank tidak aktif.", { cashAccountId: "Pilih akun aktif" });

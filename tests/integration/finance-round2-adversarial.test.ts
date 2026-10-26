@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/db";
-import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
+import { resetDb, seedFixtures, demiChefInput, makeProof, type Fixtures } from "../helpers/db";
 import { createDraft, issueInvoice } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { createCashAccount, listCashAccounts, updateCashAccount, listCashAccountOptions } from "@/server/services/cash-accounts";
@@ -218,7 +218,7 @@ describe("masukan aneh & batas", () => {
     for (const amount of [0, -1, 1.5, "100000", Number.NaN, null, CASH_AMOUNT_MAX + 1, 1e21]) {
       expect(await code(entry(fx.finance, { amount })), String(amount)).toBe("VALIDATION");
     }
-    expect((await entry(fx.finance, { amount: CASH_AMOUNT_MAX })).amount).toBe(CASH_AMOUNT_MAX);
+    expect((await entry(fx.finance, { amount: CASH_AMOUNT_MAX, proofFileId: await makeProof(fx.finance) })).amount).toBe(CASH_AMOUNT_MAX);
     expect((await entry(fx.finance, { amount: 1 })).amount).toBe(1);
     expect(await prisma.cashEntry.count()).toBe(2);
   });
@@ -303,7 +303,7 @@ describe("akun nonaktif & saldo negatif", () => {
   });
 
   it("saldo negatif tidak diblokir namun ditandai peringatan; pembalikan pembayaran lintas tanggal saldo awal tetap konsisten", async () => {
-    await entry(fx.finance, { cashAccountId: fx.cashAcctId, counterAccountId: fx.coa["6-1600"], amount: 1_500_000, description: "Melebihi saldo kas" });
+    await entry(fx.finance, { cashAccountId: fx.cashAcctId, counterAccountId: fx.coa["6-1600"], amount: 1_500_000, description: "Melebihi saldo kas", proofFileId: await makeProof(fx.finance) });
     const w = await getFinanceWarnings(fx.finance);
     expect(w.negativeAccounts).toEqual([{ id: fx.cashAcctId, name: "Kas Kecil", balance: -500_000 }]);
     // pembayaran bertanggal SEBELUM saldo awal (sudah termasuk saldo awal) lalu dibalik hari ini → keluar dari akun

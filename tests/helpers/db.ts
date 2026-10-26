@@ -2,6 +2,7 @@ import { prisma } from "@/server/db";
 import type { Actor } from "@/server/actor";
 import { hashPassword } from "@/server/auth/password";
 import { seedCoa } from "@/server/services/finance-coa";
+import { storeFile } from "@/server/services/files";
 
 /** Seluruh tabel aplikasi (TRUNCATE tidak memicu trigger baris, sehingga aman untuk reset test). */
 const TABLES = [
@@ -99,4 +100,10 @@ export function demiChefInput(fx: Fixtures, overrides: Record<string, unknown> =
     extraDiscount: 0, transport: 0, admin: 0, downPayment: 0,
     ...overrides,
   };
+}
+
+/** Unggah satu bukti pengeluaran (PDF minimal yang lolos pemeriksaan magic bytes) atas nama `actor`; dipakai untuk pengeluaran > Rp1 juta. */
+export async function makeProof(actor: Actor, name = "bukti.pdf"): Promise<string> {
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46]);
+  return (await storeFile(actor, "EXPENSE_PROOF", { name, bytes })).id;
 }

@@ -21,6 +21,7 @@ import { cancelInvoice, createDraft, issueInvoice } from "../src/server/services
 import { recordPayment } from "../src/server/services/payments";
 import { createCashAccount } from "../src/server/services/cash-accounts";
 import { createEntry, createTransfer } from "../src/server/services/cash-entries";
+import { storeFile } from "../src/server/services/files";
 import { addCalendarDays } from "../src/lib/finance/due-date";
 import { todayIso } from "../src/lib/format";
 
@@ -112,8 +113,10 @@ async function main() {
   await mk(bima, ago(2), [demiLine(3)], { paymentTermDays: 7 });
   // Pengeluaran demo: Finance langsung berlaku; Staff menunggu persetujuan.
   const cat = async (code: string) => coaByCode(code);
-  await createEntry(finance, { entryDate: ago(50), cashAccountId: bankAcc.id, counterAccountId: await cat("5-1100"), amount: 3_000_000, description: "Honor asesor uji kompetensi Demi Chef", payee: "Asesor BNSP", reference: "KW-001" });
-  await createEntry(finance, { entryDate: ago(45), cashAccountId: bankAcc.id, counterAccountId: await cat("6-1200"), amount: 2_500_000, description: "Sewa kantor bulanan", payee: "Pemilik gedung", reference: "KW-002" });
+  // Pengeluaran > Rp1 juta wajib berbukti: lampirkan bukti contoh (PDF minimal).
+  const demoProof = async () => (await storeFile(finance, "EXPENSE_PROOF", { name: "bukti-contoh.pdf", bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46]) })).id;
+  await createEntry(finance, { entryDate: ago(50), cashAccountId: bankAcc.id, counterAccountId: await cat("5-1100"), amount: 3_000_000, description: "Honor asesor uji kompetensi Demi Chef", payee: "Asesor BNSP", reference: "KW-001", proofFileId: await demoProof() });
+  await createEntry(finance, { entryDate: ago(45), cashAccountId: bankAcc.id, counterAccountId: await cat("6-1200"), amount: 2_500_000, description: "Sewa kantor bulanan", payee: "Pemilik gedung", reference: "KW-002", proofFileId: await demoProof() });
   await createEntry(finance, { entryDate: ago(25), cashAccountId: bankAcc.id, counterAccountId: await cat("6-1300"), amount: 850_000, description: "Internet & listrik", reference: "KW-003" });
   await createTransfer(finance, { transferDate: ago(20), fromAccountId: bankAcc.id, toAccountId: cashAcc.id, amount: 1_000_000, description: "Isi kas kecil" });
   await createEntry(finance, { entryDate: ago(18), cashAccountId: cashAcc.id, counterAccountId: await cat("6-1600"), amount: 275_000, description: "ATK & fotokopi" });

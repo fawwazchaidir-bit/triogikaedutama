@@ -249,6 +249,8 @@ rekonsiliasi bank, dan pajak (PPN, PPh 23 yang dipotong pelanggan, PPh badan) ad
 | `cash_transfers` | Transfer antar akun | append-only; akun berbeda; pembalik menukar akun & nominal persis |
 | `payments.cashAccountId` | Akun penerima pembayaran invoice (default menurut metode: Tunai → kas, lainnya → bank) | pembalikan harus ke akun asal; pembayaran baru hanya ke akun aktif |
 
+**Bukti wajib:** uang keluar di atas Rp1.000.000 harus berbukti (`PROOF_REQUIRED_ABOVE` di `limits.ts`, dijaga juga oleh trigger DB; pembalikan & transfer dikecualikan).
+
 **Aturan inti (diuji tuntas):** saldo akun = saldo awal + Σ mutasi bertanggal ≥ tanggal saldo awal; hanya entri **APPROVED** yang dihitung; pendapatan = penerimaan invoice neto pembalikan
 (**diakui saat uang diterima**); beban = pengeluaran neto pembalikan; investasi & pendanaan tidak pernah masuk laba rugi; transfer tidak mengubah total kas; pembalikan bertanggal hari
 pembalikan sehingga laporan periode lampau tidak berubah diam-diam; saldo negatif **tidak diblokir** (pencatatan bisa terlambat) tetapi ditandai peringatan. Batas wajar per entri Rp10 triliun

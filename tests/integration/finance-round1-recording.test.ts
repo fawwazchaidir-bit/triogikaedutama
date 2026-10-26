@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/db";
-import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
+import { resetDb, seedFixtures, demiChefInput, makeProof, type Fixtures } from "../helpers/db";
 import { issueInvoice, createDraft } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { createCashAccount, listCashAccountOptions, listCashAccounts, updateCashAccount } from "@/server/services/cash-accounts";
@@ -59,7 +59,7 @@ describe("alokasi pembayaran invoice ke akun kas/bank", () => {
 
 describe("pengeluaran: staff mengajukan, Finance Manager menyetujui", () => {
   it("menunggu persetujuan TIDAK masuk saldo/laporan; setelah disetujui masuk; jejak audit lengkap", async () => {
-    const e = await entry(fx.staff, { entryDate: "2026-03-08", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 1_200_000, description: "Honor asesor", payee: "Asesor", reference: "KW-1" });
+    const e = await entry(fx.staff, { entryDate: "2026-03-08", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 1_200_000, description: "Honor asesor", payee: "Asesor", reference: "KW-1", proofFileId: await makeProof(fx.staff) });
     expect(e).toMatchObject({ status: "PENDING", direction: "OUT", amount: 1_200_000, createdByName: "Staff Uji", counterCode: "5-1100" });
     expect((await bal())["Bank Mandiri"]).toBe(10_000_000);
     expect((await getIncomeStatement(fx.finance, { from: "2026-03-01", to: "2026-03-31" })).totalDirectCosts).toBe(0);
@@ -107,11 +107,11 @@ describe("skenario Maret 2026 lengkap — angka dihitung tangan", () => {
     const p1 = await recordPayment(fx.finance, { invoiceId: inv.id, paymentDate: "2026-03-05", amount: 5_000_000, method: "Transfer" });
     await recordPayment(fx.finance, { invoiceId: inv.id, paymentDate: "2026-03-06", amount: 1_000_000, method: "Tunai" });
     await recordPayment(fx.finance, { invoiceId: inv.id, paymentDate: "2026-03-07", amount: 2_000_000, method: "Transfer", cashAccountId: fx.cashAcctId });
-    const exp1 = await entry(fx.staff, { entryDate: "2026-03-08", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 1_200_000, description: "Honor asesor" });
+    const exp1 = await entry(fx.staff, { entryDate: "2026-03-08", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 1_200_000, description: "Honor asesor", proofFileId: await makeProof(fx.staff) });
     await approveEntry(fx.finance, exp1.id);
     await entry(fx.finance, { entryDate: "2026-03-09", cashAccountId: fx.cashAcctId, counterAccountId: fx.coa["6-1600"], amount: 275_000, description: "ATK" });
     await entry(fx.finance, { entryDate: "2026-03-10", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["3-1100"], direction: "IN", amount: 5_000_000, description: "Setoran modal" });
-    await entry(fx.finance, { entryDate: "2026-03-12", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["1-2100"], direction: "OUT", amount: 3_000_000, description: "Beli laptop" });
+    await entry(fx.finance, { entryDate: "2026-03-12", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["1-2100"], direction: "OUT", amount: 3_000_000, description: "Beli laptop", proofFileId: await makeProof(fx.finance) });
     await createTransfer(fx.finance, { transferDate: "2026-03-15", fromAccountId: fx.bankAcctId, toAccountId: fx.cashAcctId, amount: 500_000, description: "Isi kas" });
     await entry(fx.finance, { entryDate: "2026-03-31", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["4-2200"], direction: "IN", amount: 150_000, description: "Jasa giro" });
     await reversePayment(fx.finance, p1.id, { reason: "Salah rekening" }); // bertanggal HARI INI (bukan Maret)

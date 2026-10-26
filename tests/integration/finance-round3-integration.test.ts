@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { prisma } from "@/server/db";
-import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
+import { resetDb, seedFixtures, demiChefInput, makeProof, type Fixtures } from "../helpers/db";
 import { createDraft, issueInvoice, submitInvoice } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { listCashAccounts } from "@/server/services/cash-accounts";
@@ -138,7 +138,7 @@ async function fuzz(seed: number, ops: number): Promise<Model> {
         const choice = kind === "income" ? { c: pick(["4-2100", "4-2200"]), dir: "IN" as const }
           : kind === "financing" ? pick([{ c: "3-1100", dir: "IN" as const }, { c: "3-1200", dir: "OUT" as const }, { c: "2-2100", dir: "IN" as const }, { c: "2-2100", dir: "OUT" as const }])
           : pick([{ c: "1-2100", dir: "OUT" as const }, { c: "1-2300", dir: "OUT" as const }, { c: "1-2200", dir: "IN" as const }]);
-        const e = await createEntry(fx.finance, { entryDate: date, cashAccountId: a, counterAccountId: code(choice.c), direction: choice.dir, amount, description: `Fuzz ${kind} ${i}` });
+        const e = await createEntry(fx.finance, { entryDate: date, cashAccountId: a, counterAccountId: code(choice.c), direction: choice.dir, amount, description: `Fuzz ${kind} ${i}`, ...(choice.dir === "OUT" && amount > 1_000_000 ? { proofFileId: await makeProof(fx.finance) } : {}) });
         m.bal[a]! += choice.dir === "IN" ? amount : -amount;
         m.entries.push({ id: e.id, date, dir: choice.dir, amount, acct: a, counter: choice.c, type: "ENTRY", reversed: false });
       } else if (kind === "transfer") {
@@ -260,7 +260,7 @@ describe("(b) alur lintas peran dari awal sampai laporan", () => {
     await submitInvoice(fx.staff, draft.id);
     const inv = await issueInvoice(fx.finance, draft.id);
     await recordPayment(fx.staff, { invoiceId: inv.id, paymentDate: "2026-04-10", amount: 6_000_000, method: "Transfer" });
-    const exp = await createEntry(fx.staff, { entryDate: "2026-04-11", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 2_000_000, description: "Honor asesor" });
+    const exp = await createEntry(fx.staff, { entryDate: "2026-04-11", cashAccountId: fx.bankAcctId, counterAccountId: fx.coa["5-1100"], amount: 2_000_000, description: "Honor asesor", proofFileId: await makeProof(fx.staff) });
     expect((await getIncomeStatement(fx.finance, { from: "2026-04-01", to: "2026-04-30" })).totalDirectCosts).toBe(0); // belum disetujui
     await approveEntry(fx.finance, exp.id);
 

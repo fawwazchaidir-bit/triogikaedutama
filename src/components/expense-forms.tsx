@@ -9,6 +9,8 @@ import { MoneyInput } from "@/components/ui/money-input";
 import { Notice } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import { ApiClientError, api, errorMessage } from "@/lib/api-client";
+import { PROOF_REQUIRED_ABOVE } from "@/lib/accounting/limits";
+import { formatRupiah } from "@/lib/finance/money";
 import type { CashAccountOptionDto, CashEntryDto, CoaAccountDto } from "@/lib/finance-types";
 
 const today = () => new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
@@ -43,8 +45,15 @@ function EntryDialog({ mode, accounts, categories, onClose }: { mode: "expense" 
   const lockedDirection = mode === "expense" ? "OUT" : counter?.type === "PENDAPATAN" ? "IN" : null;
   const direction = lockedDirection ?? f.direction;
 
+  const proofRequired = direction === "OUT" && (f.amount ?? 0) > PROOF_REQUIRED_ABOVE;
+
   async function submit() {
-    setBusy(true); setError(null); setFe({});
+    setError(null); setFe({});
+    if (proofRequired && !proof) {
+      setFe({ proofFileId: `Bukti wajib untuk pengeluaran di atas ${formatRupiah(PROOF_REQUIRED_ABOVE, "PLAIN")}` });
+      return;
+    }
+    setBusy(true);
     try {
       let proofFileId: string | null = null;
       if (proof) {
@@ -90,10 +99,10 @@ function EntryDialog({ mode, accounts, categories, onClose }: { mode: "expense" 
         <TextField label="No. bukti / kuitansi" value={f.reference} onChange={(e) => setF({ ...f, reference: e.target.value })} error={fe.reference} placeholder="Opsional" />
         <TextAreaField label="Keterangan" required rows={2} className="sm:col-span-2" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} error={fe.description} placeholder="mis. Honor asesor uji kompetensi Demi Chef" />
         <div className="sm:col-span-2">
-          <label className="block text-sm font-medium text-ink-soft" htmlFor="expense-proof">Bukti (opsional)</label>
+          <label className="block text-sm font-medium text-ink-soft" htmlFor="expense-proof">{proofRequired ? "Bukti transaksi" : "Bukti (opsional)"}{proofRequired && <span className="text-brand-600" aria-hidden> *</span>}</label>
           <input id="expense-proof" type="file" accept="image/png,image/jpeg,application/pdf" onChange={(e) => setProof(e.target.files?.[0] ?? null)} className="mt-1.5 block w-full text-sm" />
           {fe.proofFileId && <p role="alert" className="mt-1 text-xs font-medium text-brand-700">{fe.proofFileId}</p>}
-          <p className="mt-1 text-xs text-muted">PNG, JPEG, atau PDF.</p>
+          <p className="mt-1 text-xs text-muted">PNG, JPEG, atau PDF. <strong>Wajib</strong> untuk pengeluaran di atas {formatRupiah(PROOF_REQUIRED_ABOVE, "PLAIN")}.</p>
         </div>
       </div>
     </Dialog>

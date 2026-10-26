@@ -74,6 +74,41 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await expect(page.getByRole("link", { name: "Keuangan" })).toHaveCount(0);
   });
 
+  test("Staff: pengeluaran di atas Rp1 juta wajib berbukti (UI + API); tepat Rp1 juta boleh tanpa bukti", async ({ page }) => {
+    await login(page, "staff");
+    await page.goto("/expenses");
+    await page.getByRole("button", { name: "Catat pengeluaran" }).click();
+    const dlg = page.getByRole("dialog", { name: "Catat pengeluaran" });
+    await dlg.getByLabel("Kategori").selectOption({ label: "5-1100 — Honor Instruktur, Asesor & Narasumber" });
+    await dlg.getByLabel("Keterangan").fill("Honor besar E2E");
+    await expect(dlg.getByText(/Wajib.*untuk pengeluaran di atas Rp 1\.000\.000/)).toBeVisible();
+
+    await dlg.getByLabel("Nominal").fill("1000000"); // batas: tanpa bukti boleh → tidak ditandai wajib
+    await expect(dlg.getByText("Bukti (opsional)")).toBeVisible();
+    await dlg.getByLabel("Nominal").fill("1500000"); // di atas batas → label berubah jadi wajib
+    await expect(dlg.getByText("Bukti transaksi")).toBeVisible();
+    await dlg.getByRole("button", { name: "Simpan" }).click();
+    await expect(dlg.getByRole("alert").filter({ hasText: /Bukti wajib untuk pengeluaran di atas Rp 1\.000\.000/ })).toBeVisible();
+    await expect(page.getByRole("row", { name: /Honor besar E2E/ })).toHaveCount(0);
+
+    // lampirkan bukti → berhasil (menunggu persetujuan)
+    await dlg.getByLabel(/Bukti transaksi/).setInputFiles({ name: "nota.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%%EOF\n") });
+    await dlg.getByRole("button", { name: "Simpan" }).click();
+    const row = page.getByRole("row", { name: /Honor besar E2E/ });
+    await expect(row).toContainText("Menunggu persetujuan");
+    await expect(row.getByRole("link", { name: "Unduh bukti" })).toBeVisible();
+
+    // API langsung tanpa bukti juga ditolak server (bukan hanya UI)
+    const cats = (await (await page.request.get("/api/finance/coa")).json()).data as { id: string; code: string }[];
+    const accts = (await (await page.request.get("/api/finance/cash-accounts/options")).json()).data as { id: string }[];
+    const res = await page.request.post("/api/finance/entries", { headers: ORIGIN, data: {
+      entryDate: new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10), cashAccountId: accts[0]!.id,
+      counterAccountId: cats.find((c) => c.code === "5-1100")!.id, amount: 1_000_001, description: "Tanpa bukti lewat API",
+    } });
+    expect(res.status()).toBe(422);
+    expect((await res.json()).error.fieldErrors.proofFileId).toMatch(/wajib/i);
+  });
+
   test("Finance Manager: menyetujui & menolak (alasan wajib); laporan laba rugi, arus kas, kas & bank, transfer, pembalikan, ekspor", async ({ page, browser }) => {
     // staff menambah satu pengajuan lagi untuk ditolak
     const sctx = await browser.newContext();
