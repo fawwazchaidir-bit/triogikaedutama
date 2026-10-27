@@ -125,7 +125,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
 
     await login(page, "finance");
     await page.goto("/dashboard");
-    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pengaturan"]);
+    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pajak", "Pengaturan"]);
     await page.goto("/expenses?status=PENDING");
     await expect(page.getByText(/pengeluaran menunggu persetujuan/)).toBeVisible();
 
@@ -279,7 +279,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await dlg.getByLabel("Kredit baris 2").fill("100000");
     await expect(dlg.getByRole("status")).toContainText("Seimbang");
     await dlg.getByRole("button", { name: "Simpan jurnal" }).click();
-    await expect(page.getByText("Jurnal dicatat.")).toBeVisible();
+    await expect(page.getByText("Jurnal dicatat.").first()).toBeVisible();
     const item = page.getByTestId("journal-item").filter({ hasText: "Penyusutan E2E salah" });
     await expect(item).toContainText("6-2000");
     await expect(item).toContainText("Akumulasi Penyusutan");
@@ -299,7 +299,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await dlg.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
     await dlg.getByLabel("Kredit baris 2").fill("90000");
     await dlg.getByRole("button", { name: "Simpan jurnal" }).click();
-    await expect(page.getByText("Jurnal dicatat.")).toBeVisible();
+    await expect(page.getByText("Jurnal dicatat.").first()).toBeVisible();
     await page.getByLabel("Sumber").selectOption("MANUAL");
     await page.getByRole("button", { name: "Terapkan" }).click();
     await expect(page.getByTestId("journal-item")).toHaveCount(3);
@@ -388,5 +388,104 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await expect(page.getByText("Penutupan buku dicabut.")).toBeVisible();
     await expect(page.getByText("Buku belum ditutup.")).toBeVisible();
     expect((await entry(yesterday)).status()).toBe(201);
+  });
+  test("Pajak: Admin mengatur profil; pembayaran dengan PPh dipotong + PPN → register, rekap PPN, setoran, estimasi PPh badan + jurnal; staff tidak punya akses", async ({ page, browser }) => {
+    // Admin: profil pajak (tarif diisi pengguna) + invoice ber-PPN
+    await login(page, "admin");
+    await page.goto("/taxes");
+    await expect(page.getByRole("heading", { name: "Pajak", exact: true, level: 1 })).toBeVisible();
+    await expect(page.getByText(/Sistem tidak mengasumsikan tarif/).first()).toBeVisible();
+    await page.getByRole("button", { name: "Ubah profil pajak" }).click();
+    const pd = page.getByRole("dialog", { name: "Profil pajak" });
+    await pd.getByLabel(/Perusahaan adalah Pengusaha Kena Pajak/).check();
+    await pd.getByLabel("Rezim PPh badan").selectOption("GENERAL");
+    await pd.getByRole("button", { name: "Simpan" }).click();
+    await expect(pd.getByRole("alert").filter({ hasText: /Wajib diisi/ })).toBeVisible(); // tarif tidak diasumsikan
+    await pd.getByLabel("Tarif (%)").fill("22");
+    await pd.getByRole("button", { name: "Simpan" }).click();
+    await expect(page.getByText("Profil pajak disimpan.")).toBeVisible();
+    await expect(page.getByText("Tarif umum (tahunan)")).toBeVisible();
+    await expect(page.getByText("22.00%")).toBeVisible();
+
+    const cust = (await (await page.request.get("/api/customers/search?q=Bima")).json()).data[0].id as string;
+    const prod = (await (await page.request.get("/api/products/search?q=Demi")).json()).data[0].id as string;
+    const taxes = (await (await page.request.get("/api/tax")).json()).data as { id: string; code: string }[];
+    const ppn = taxes.find((t) => t.code === "PPN11")!.id;
+    const draft = await page.request.post("/api/invoices", { headers: ORIGIN, data: {
+      customerId: cust, invoiceDate: wib(), paymentMethod: "Transfer", paymentTermDays: 7, dueDateBasis: "CALENDAR_DAYS",
+      lines: [{ productId: prod, description: "Diklat E2E pajak", quantity: 1, unit: "Pax", unitPrice: 2_000_000, discount: 0, taxConfigId: ppn }],
+    } });
+    expect(draft.status()).toBe(201);
+    const id = (await draft.json()).data.id as string;
+    expect((await page.request.post(`/api/invoices/${id}/issue`, { headers: ORIGIN, data: {} })).status()).toBe(200);
+
+    // Finance: catat pembayaran dengan PPh dipotong pelanggan (neto) — uang otomatis berkurang
+    const fctx = await browser.newContext();
+    const fp = await fctx.newPage();
+    await login(fp, "finance");
+    await fp.goto(`/invoices/${id}`);
+    await fp.getByRole("button", { name: "Catat pembayaran" }).click();
+    const dlg = fp.getByRole("dialog", { name: /Catat pembayaran/ });
+    await dlg.getByLabel(/PPh dipotong pelanggan/).fill("40000");
+    await expect(dlg.getByLabel("Nominal")).toHaveValue("2.180.000");
+    await dlg.getByLabel("Nomor bukti potong").fill("BP-E2E-0");
+    await dlg.getByRole("button", { name: "Simpan pembayaran" }).click();
+    await expect(fp.getByText("Pembayaran dicatat.")).toBeVisible();
+    await fp.goto("/payments?q=Bima");
+    const prow = fp.getByRole("row", { name: /Bima/ }).first();
+    await expect(prow).toContainText("40.000");
+    await expect(prow).toContainText("220.000"); // PPN dalam pembayaran
+
+    // register PPh: lengkapi nomor bukti potong pada pembayaran lain tanpa nomor
+    await fp.goto(`/invoices/${id}`);
+    expect((await fp.request.get(`/api/finance/taxes/pph23?format=json&from=${wib().slice(0, 4)}-01-01&to=${wib()}`)).status()).toBe(200);
+    await fp.goto("/taxes?tab=pph23");
+    await expect(fp.getByRole("row", { name: /BP-E2E-0/ })).toBeVisible();
+    await expect(fp.getByText("Belum ada")).toHaveCount(0);
+
+    // PPN: rekap bulan ini, ekspor
+    await fp.goto("/taxes?tab=ppn");
+    await expect(fp.getByRole("heading", { name: "Rekap PPN keluaran" })).toBeVisible();
+    const csv = await fp.request.get(`/api/finance/taxes/vat?format=csv&from=${wib().slice(0, 4)}-01-01&to=${wib()}`);
+    expect(csv.status()).toBe(200);
+    expect((await csv.body()).toString("utf8")).toContain("Rekap PPN Keluaran");
+    expect((await fp.request.get("/api/finance/taxes/bukan-laporan")).status()).toBe(404);
+
+    // Setoran PPN: di atas Rp1 juta wajib bukti; nominal kecil langsung berlaku
+    await fp.getByRole("button", { name: "Catat setoran pajak" }).click();
+    const td = fp.getByRole("dialog", { name: "Catat setoran pajak" });
+    await td.getByLabel("Masa / tahun pajak").fill(wib().slice(0, 7));
+    await td.getByLabel("Nominal").fill("1200000");
+    await td.getByLabel("NTPN / ID billing").fill("NTPN-E2E");
+    await td.getByRole("button", { name: "Simpan" }).click();
+    await expect(td.getByRole("alert").filter({ hasText: /Bukti wajib/ })).toBeVisible();
+    await td.getByLabel("Nominal").fill("100000");
+    await td.getByRole("button", { name: "Simpan" }).click();
+    await expect(fp.getByText("Setoran pajak dicatat.")).toBeVisible();
+    await fp.goto("/taxes?tab=setoran");
+    await expect(fp.getByRole("row", { name: /NTPN-E2E/ })).toContainText("100.000");
+
+    // Estimasi PPh badan: jurnal penyesuaian disarankan lalu dicatat; sesudahnya sesuai
+    await fp.goto("/taxes?tab=pph-badan");
+    await expect(fp.getByRole("heading", { name: /Estimasi PPh badan tahun/ })).toBeVisible();
+    await expect(fp.getByText(/Jurnal penyesuaian yang disarankan/)).toBeVisible();
+    await fp.getByRole("button", { name: "Catat jurnal penyesuaian" }).click();
+    await fp.getByRole("button", { name: "Ya, catat jurnal" }).click();
+    await expect(fp.getByText("Jurnal PPh dicatat.")).toBeVisible();
+    await expect(fp.getByText("Pembukuan PPh sudah sesuai dengan estimasi.")).toBeVisible();
+    await fp.goto("/statements?type=trial-balance");
+    await expect(fp.getByRole("row", { name: /7-1100|Beban Pajak Penghasilan/ }).first()).toBeVisible();
+
+    await fctx.close();
+
+    // Staff tidak melihat pajak
+    const sctx = await browser.newContext();
+    const sp = await sctx.newPage();
+    await login(sp, "staff");
+    expect((await sp.goto("/taxes"))!.status()).toBe(404);
+    for (const u of ["/api/finance/taxes/overview", "/api/finance/taxes/vat", "/api/finance/taxes/payments", "/api/finance/taxes/profile"]) expect((await sp.request.get(u)).status(), u).toBe(403);
+    expect((await sp.request.put("/api/finance/taxes/profile", { headers: ORIGIN, data: { isPkp: false, regime: "NONE", rateBps: null } })).status()).toBe(403);
+    expect((await sp.request.post("/api/finance/taxes/corporate-journal", { headers: ORIGIN, data: { year: 2026 } })).status()).toBe(403);
+    await sctx.close();
   });
 });

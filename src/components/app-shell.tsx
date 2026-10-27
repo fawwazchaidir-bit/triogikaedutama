@@ -4,7 +4,7 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  BarChart3, BookOpen, FileText, KeyRound, Landmark, LayoutDashboard, LogOut, Menu, Package, Receipt, ScrollText, Settings, TrendingUp, Users, Wallet, X,
+  BarChart3, BookOpen, FileText, Percent, KeyRound, Landmark, LayoutDashboard, LogOut, Menu, Package, Receipt, ScrollText, Settings, TrendingUp, Users, Wallet, X,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { api } from "@/lib/api-client";
@@ -22,6 +22,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "/journals": BookOpen,
   "/reports": BarChart3,
   "/statements": TrendingUp,
+  "/taxes": Percent,
   "/audit-log": ScrollText,
   "/settings": Settings,
 };

@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
-import { prisma, transaction } from "../db";
+import { prisma, transaction, type Tx } from "../db";
 import { env } from "../env";
 import { Errors } from "../errors";
 import { parseInput } from "../validate";
@@ -71,6 +71,15 @@ export async function bookkeepingStart(db: Pick<typeof prisma, "cashAccount"> = 
 export async function createJournal(actor: Actor, raw: unknown): Promise<JournalDto> {
   assertCan(actor, "journal:record");
   const input = parseInput(journalInputSchema, raw);
+  const id = await transaction((tx) => createJournalTx(tx, actor, input));
+  return getJournalDto(id);
+}
+
+export const getJournalDto = async (id: string): Promise<JournalDto> => toJournalDto(await prisma.journalEntry.findUniqueOrThrow({ where: { id }, include }));
+
+/** Inti pembuatan jurnal di dalam transaksi pemanggil (agar dapat digabung dengan perhitungan yang harus atomik, mis. jurnal PPh badan). */
+export async function createJournalTx(tx: Tx, actor: Actor, input: z.infer<typeof journalInputSchema>): Promise<string> {
+  assertCan(actor, "journal:record");
   const today = todayIso(env().APP_TIMEZONE);
   if (input.journalDate > today) throw Errors.validation("Tanggal jurnal tidak boleh di masa depan.", { journalDate: "Tidak boleh di masa depan" });
 
@@ -85,39 +94,36 @@ export async function createJournal(actor: Actor, raw: unknown): Promise<Journal
   }
   if (new Set(input.lines.map((l) => l.accountId)).size < 2) throw Errors.validation("Jurnal harus melibatkan minimal dua akun berbeda.", { lines: "Minimal dua akun berbeda" });
 
-  const id = await transaction(async (tx) => {
-    const start = await bookkeepingStart(tx);
-    if (!start) throw Errors.conflict("Belum ada akun kas/bank. Tambahkan akun beserta saldo awal di Pengaturan → Keuangan sebelum membuat jurnal.");
-    await assertBooksOpen(tx, input.journalDate, "jurnal", "journalDate");
-    if (input.journalDate < start) throw Errors.validation(`Tanggal mendahului tanggal mulai pembukuan (${start}).`, { journalDate: `Minimal ${start}` });
-    if (input.kind === "OPENING" && input.journalDate !== start) throw Errors.validation(`Jurnal saldo awal harus bertanggal tepat pada tanggal mulai pembukuan (${start}).`, { journalDate: `Harus ${start}` });
+  const start = await bookkeepingStart(tx);
+  if (!start) throw Errors.conflict("Belum ada akun kas/bank. Tambahkan akun beserta saldo awal di Pengaturan → Keuangan sebelum membuat jurnal.");
+  await assertBooksOpen(tx, input.journalDate, "jurnal", "journalDate");
+  if (input.journalDate < start) throw Errors.validation(`Tanggal mendahului tanggal mulai pembukuan (${start}).`, { journalDate: `Minimal ${start}` });
+  if (input.kind === "OPENING" && input.journalDate !== start) throw Errors.validation(`Jurnal saldo awal harus bertanggal tepat pada tanggal mulai pembukuan (${start}).`, { journalDate: `Harus ${start}` });
 
-    const accounts = await tx.coaAccount.findMany({ where: { id: { in: input.lines.map((l) => l.accountId) } } });
-    const byId = new Map(accounts.map((a) => [a.id, a]));
-    const cashCoa = new Set((await tx.cashAccount.findMany({ select: { coaAccountId: true } })).map((c) => c.coaAccountId));
-    input.lines.forEach((l, i) => {
-      const a = byId.get(l.accountId);
-      const key = `lines.${i}.accountId`;
-      if (!a || !a.isActive) throw Errors.validation(`Baris ${i + 1}: akun tidak ditemukan atau tidak aktif.`, { [key]: "Pilih akun aktif" });
-      if (cashCoa.has(a.id)) throw Errors.validation(`Baris ${i + 1}: akun ${a.code} dipetakan ke kas/bank dan tidak boleh dijurnal manual — gunakan modul Kas & Bank.`, { [key]: "Akun kas/bank: pakai modul kas" });
-      if (RESERVED_CODES.has(a.code)) throw Errors.validation(`Baris ${i + 1}: akun ${a.code} dicadangkan (dicatat/dihitung otomatis) dan tidak boleh dijurnal manual.`, { [key]: "Akun dicadangkan" });
-      if (input.kind === "OPENING" && (a.type === "PENDAPATAN" || a.type === "BEBAN")) throw Errors.validation(`Baris ${i + 1}: jurnal saldo awal hanya boleh memuat akun neraca (aset, liabilitas, ekuitas).`, { [key]: "Hanya akun neraca" });
-    });
-
-    const j = await tx.journalEntry.create({
-      data: {
-        kind: input.kind, journalDate: isoToDate(input.journalDate), description: input.description, reference: input.reference, createdById: actor.userId,
-        lines: { create: input.lines.map((l, i) => ({ lineNo: i + 1, accountId: l.accountId, debit: BigInt(l.debit), credit: BigInt(l.credit), memo: l.memo })) },
-      },
-    });
-    await writeAudit(tx, actor, {
-      action: "journal.create", entityType: "JournalEntry", entityId: j.id,
-      summary: `Jurnal ${journalLabel(j.numberSeq)}${input.kind === "OPENING" ? " (saldo awal)" : ""}: ${input.description} — ${formatRupiah(totalDebit, "PLAIN")}`,
-      after: { number: journalLabel(j.numberSeq), kind: input.kind, date: input.journalDate, total: totalDebit, lines: input.lines.map((l) => ({ account: byId.get(l.accountId)!.code, debit: l.debit, credit: l.credit })) },
-    });
-    return j.id;
+  const accounts = await tx.coaAccount.findMany({ where: { id: { in: input.lines.map((l) => l.accountId) } } });
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const cashCoa = new Set((await tx.cashAccount.findMany({ select: { coaAccountId: true } })).map((c) => c.coaAccountId));
+  input.lines.forEach((l, i) => {
+    const a = byId.get(l.accountId);
+    const key = `lines.${i}.accountId`;
+    if (!a || !a.isActive) throw Errors.validation(`Baris ${i + 1}: akun tidak ditemukan atau tidak aktif.`, { [key]: "Pilih akun aktif" });
+    if (cashCoa.has(a.id)) throw Errors.validation(`Baris ${i + 1}: akun ${a.code} dipetakan ke kas/bank dan tidak boleh dijurnal manual — gunakan modul Kas & Bank.`, { [key]: "Akun kas/bank: pakai modul kas" });
+    if (RESERVED_CODES.has(a.code)) throw Errors.validation(`Baris ${i + 1}: akun ${a.code} dicadangkan (dicatat/dihitung otomatis) dan tidak boleh dijurnal manual.`, { [key]: "Akun dicadangkan" });
+    if (input.kind === "OPENING" && (a.type === "PENDAPATAN" || a.type === "BEBAN")) throw Errors.validation(`Baris ${i + 1}: jurnal saldo awal hanya boleh memuat akun neraca (aset, liabilitas, ekuitas).`, { [key]: "Hanya akun neraca" });
   });
-  return toJournalDto(await prisma.journalEntry.findUniqueOrThrow({ where: { id }, include }));
+
+  const j = await tx.journalEntry.create({
+    data: {
+      kind: input.kind, journalDate: isoToDate(input.journalDate), description: input.description, reference: input.reference, createdById: actor.userId,
+      lines: { create: input.lines.map((l, i) => ({ lineNo: i + 1, accountId: l.accountId, debit: BigInt(l.debit), credit: BigInt(l.credit), memo: l.memo })) },
+    },
+  });
+  await writeAudit(tx, actor, {
+    action: "journal.create", entityType: "JournalEntry", entityId: j.id,
+    summary: `Jurnal ${journalLabel(j.numberSeq)}${input.kind === "OPENING" ? " (saldo awal)" : ""}: ${input.description} — ${formatRupiah(totalDebit, "PLAIN")}`,
+    after: { number: journalLabel(j.numberSeq), kind: input.kind, date: input.journalDate, total: totalDebit, lines: input.lines.map((l) => ({ account: byId.get(l.accountId)!.code, debit: l.debit, credit: l.credit })) },
+  });
+  return j.id;
 }
 
 export const journalReverseSchema = z.object({ reason: z.string().trim().min(5, "Alasan minimal 5 karakter").max(300) });

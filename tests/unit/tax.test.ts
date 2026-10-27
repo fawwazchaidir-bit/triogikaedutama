@@ -87,3 +87,36 @@ describe("laba rugi tahap 1 (pembanding independen) dengan pajak", () => {
     expect(r.withheldByCustomers).toBe(200_000);
   });
 });
+
+import { corporateTax } from "@/lib/accounting/tax";
+describe("estimasi PPh badan (aritmetika dari masukan; tarif milik pengguna)", () => {
+  const base = { regime: "GENERAL" as const, rateBps: 2200, commercialProfit: 100_000_000, grossRevenue: 0, fiscalCorrection: 5_000_000, lossCompensation: 10_000_000, facilityReduction: 0, withholdingCredit: 3_000_000, installmentsPaid: 12_000_000 };
+  it("GENERAL: PKP = laba + koreksi − kompensasi; kurang bayar = pajak − PPh 23 − angsuran", () => {
+    const r = corporateTax(base);
+    expect(r.basis).toBe(95_000_000);
+    expect(r.taxDue).toBe(20_900_000);
+    expect(r.payable).toBe(20_900_000 - 3_000_000 - 12_000_000);
+  });
+  it("rugi fiskal → pajak 0, angsuran menjadi lebih bayar; fasilitas tidak melebihi pajak", () => {
+    const r = corporateTax({ ...base, commercialProfit: -50_000_000, fiscalCorrection: 0, lossCompensation: 0, facilityReduction: 999 });
+    expect(r.basis).toBe(0);
+    expect(r.taxDue).toBe(0);
+    expect(r.facilityReduction).toBe(0);
+    expect(r.payable).toBe(-3_000_000 - 12_000_000);
+    expect(corporateTax({ ...base, facilityReduction: 50_000_000 }).taxDue).toBe(0);
+    expect(corporateTax({ ...base, facilityReduction: 900_000 }).taxDue).toBe(20_000_000);
+  });
+  it("FINAL: pajak dari peredaran bruto, tanpa kredit PPh 23 dan koreksi fiskal", () => {
+    const r = corporateTax({ ...base, regime: "FINAL", rateBps: 50, grossRevenue: 400_000_000 });
+    expect(r.basis).toBe(400_000_000);
+    expect(r.taxDue).toBe(2_000_000);
+    expect(r.credits).toBe(0);
+    expect(r.payable).toBe(2_000_000 - 12_000_000);
+  });
+  it("NONE atau tarif kosong → tidak ada estimasi; pembulatan ke bawah; nilai besar aman", () => {
+    expect(corporateTax({ ...base, regime: "NONE" }).taxDue).toBe(0);
+    expect(corporateTax({ ...base, rateBps: null }).taxDue).toBe(0);
+    expect(corporateTax({ ...base, commercialProfit: 1_000_001, fiscalCorrection: 0, lossCompensation: 0, rateBps: 2200 }).taxGross).toBe(220_000); // 220.000,22 → ke bawah
+    expect(corporateTax({ ...base, commercialProfit: 9_000_000_000_000_000, fiscalCorrection: 0, lossCompensation: 0, rateBps: 2200 }).taxGross).toBe(1_980_000_000_000_000);
+  });
+});

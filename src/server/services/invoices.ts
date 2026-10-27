@@ -11,6 +11,7 @@ import { dateToIso, isoToDate, toJson } from "../json";
 import { lockInvoice } from "./invoice-lock";
 import { resolvePaymentAccount } from "./cash-accounts";
 import { applyLedger } from "./payments";
+import { assertBooksOpen } from "./books-lock";
 import { vatForPayment } from "@/lib/accounting/tax";
 import { allocateInvoiceNumber } from "./numbering";
 import { loadSettingsRow } from "./settings";
@@ -525,6 +526,7 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
 
     const bank = inv.bankAccount?.isActive ? inv.bankAccount : await tx.bankAccount.findFirst({ where: { isActive: true, isDefault: true } });
     const invoiceDate = dateToIso(inv.invoiceDate);
+    await assertBooksOpen(tx, invoiceDate, "invoice", "invoiceDate", "diterbitkan (ubah tanggal invoice pada draft)");
     const dueDate = computeDueDate(invoiceDate, inv.paymentTermDays, inv.dueDateBasis);
     const { number, scopeKey, seq } = await allocateInvoiceNumber(tx, settings, invoiceDate);
 

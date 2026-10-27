@@ -158,6 +158,7 @@ model User {
   entriesApproved   CashEntry[]    @relation("CashEntryApprovedBy")
   entriesRejected   CashEntry[]    @relation("CashEntryRejectedBy")
   transfersCreated  CashTransfer[] @relation("CashTransferCreatedBy")
+  taxYearInputs     TaxYearInput[]
   journalsCreated   JournalEntry[] @relation("JournalCreatedBy")
   auditLogs         AuditLog[]
 
@@ -317,9 +318,43 @@ model CompanySettings {
   /// Penutupan buku: pembayaran, entri kas, transfer, dan jurnal bertanggal ≤ tanggal ini ditolak (kosong = tidak ada penutupan).
   booksLockedThrough DateTime? @db.Date
 
+  // ── Profil pajak (tarif TIDAK diasumsikan sistem; diisi pengguna sesuai arahan konsultan pajak) ──
+  /// Pengusaha Kena Pajak (informasi pada laporan PPN).
+  isPkp               Boolean            @default(false)
+  corporateTaxRegime  CorporateTaxRegime @default(NONE)
+  /// Tarif dalam basis poin (2200 = 22%). GENERAL: atas penghasilan kena pajak; FINAL: atas peredaran bruto (di luar PPN) per bulan.
+  corporateTaxRateBps Int?
+
   updatedAt DateTime @updatedAt
 
   @@map("company_settings")
+}
+
+enum CorporateTaxRegime {
+  /// Estimasi PPh badan tidak dihitung.
+  NONE
+  /// Tarif umum atas penghasilan kena pajak tahunan (laba komersial + koreksi fiskal − kompensasi rugi).
+  GENERAL
+  /// PPh final atas peredaran bruto bulanan (tanpa koreksi fiskal / kredit PPh 23).
+  FINAL
+}
+
+/// Input tahunan untuk estimasi PPh badan yang tidak dapat diturunkan dari pembukuan (diisi Finance Manager/akuntan).
+model TaxYearInput {
+  year              Int      @id
+  /// Koreksi fiskal neto (positif menambah, negatif mengurangi penghasilan kena pajak).
+  fiscalCorrection  BigInt   @default(0)
+  /// Kompensasi kerugian fiskal tahun sebelumnya yang dipakai (mengurangi penghasilan kena pajak).
+  lossCompensation  BigInt   @default(0)
+  /// Pengurang pajak terutang (mis. fasilitas tarif) dalam Rupiah, dihitung akuntan.
+  facilityReduction BigInt   @default(0)
+  note              String?
+  updatedById       String   @db.Uuid
+  updatedAt         DateTime @updatedAt
+
+  updatedBy User @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("tax_year_inputs")
 }
 
 model BankAccount {
