@@ -11,6 +11,7 @@ import { dateToIso, isoToDate, toJson } from "../json";
 import { lockInvoice } from "./invoice-lock";
 import { resolvePaymentAccount } from "./cash-accounts";
 import { applyLedger } from "./payments";
+import { vatForPayment } from "@/lib/accounting/tax";
 import { allocateInvoiceNumber } from "./numbering";
 import { loadSettingsRow } from "./settings";
 import { toTaxRule } from "./tax";
@@ -558,6 +559,7 @@ export async function issueInvoice(actor: Actor, id: string, raw: unknown = {}):
       await tx.payment.create({
         data: {
           invoiceId: id, entryType: "PAYMENT", paymentDate: isoToDate(invoiceDate), amount: BigInt(calc.downPaymentAmount),
+          vatAmount: BigInt(vatForPayment({ total: calc.totalAmount, vat: calc.taxAmount, settledBefore: 0, vatBefore: 0, settled: calc.downPaymentAmount })),
           method: inv.paymentMethod, reference: "Down Payment (dicatat saat penerbitan)", isDownPayment: true, recordedById: actor.userId,
           cashAccountId: await resolvePaymentAccount(tx, inv.paymentMethod),
         },

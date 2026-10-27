@@ -16,7 +16,7 @@ export async function loadStmtData(upTo: string, db: Client = prisma): Promise<S
   const until = isoToDate(upTo);
   const [accounts, payments, entries, transfers] = await Promise.all([
     db.cashAccount.findMany({ orderBy: [{ kind: "asc" }, { name: "asc" }] }),
-    db.payment.findMany({ where: { paymentDate: { lte: until } }, select: { paymentDate: true, amount: true, cashAccountId: true, invoice: { select: { taxAmount: true } } } }),
+    db.payment.findMany({ where: { paymentDate: { lte: until } }, select: { paymentDate: true, amount: true, withholdingAmount: true, vatAmount: true, cashAccountId: true } }),
     db.cashEntry.findMany({
       where: { status: "APPROVED", entryDate: { lte: until } },
       select: { entryDate: true, direction: true, amount: true, cashAccountId: true, counterAccount: { select: { id: true, code: true, name: true, type: true, section: true } } },
@@ -27,7 +27,7 @@ export async function loadStmtData(upTo: string, db: Client = prisma): Promise<S
     accounts: accounts.map((a) => ({
       id: a.id, name: a.name, kind: a.kind, openingBalance: Number(a.openingBalance), openingDate: dateToIso(a.openingDate), isActive: a.isActive, isDefault: a.isDefault,
     })),
-    payments: payments.map((p) => ({ date: dateToIso(p.paymentDate), amount: Number(p.amount), accountId: p.cashAccountId, onTaxedInvoice: Number(p.invoice.taxAmount) > 0 })),
+    payments: payments.map((p) => ({ date: dateToIso(p.paymentDate), amount: Number(p.amount), withholding: Number(p.withholdingAmount), vat: Number(p.vatAmount), accountId: p.cashAccountId })),
     entries: entries.map((e) => ({ date: dateToIso(e.entryDate), direction: e.direction, amount: Number(e.amount), accountId: e.cashAccountId, counter: e.counterAccount })),
     transfers: transfers.map((t) => ({ date: dateToIso(t.transferDate), fromId: t.fromAccountId, toId: t.toAccountId, amount: Number(t.amount) })),
   };

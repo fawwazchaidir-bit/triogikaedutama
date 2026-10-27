@@ -237,6 +237,11 @@ export interface PaymentDto {
   /** Positif = pembayaran; negatif = pembalikan */
   amount: number;
   method: string;
+  /** PPh dipotong pelanggan (ikut melunasi invoice, bukan uang masuk) dan nomor bukti potongnya; negatif pada pembalikan. */
+  withholdingAmount: number;
+  withholdingRef: string | null;
+  /** Bagian PPN dari (amount + withholdingAmount); negatif pada pembalikan. */
+  vatAmount: number;
   reference: string | null;
   note: string | null;
   reason: string | null;

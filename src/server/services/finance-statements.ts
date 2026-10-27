@@ -136,6 +136,7 @@ export async function runStatement(actor: Actor, type: string, raw: unknown = {}
       line("   Penerimaan dari invoice (pembayaran pelanggan, neto pembalikan)", r.operating.invoiceReceipts),
       ...lines(r.operating.otherIncome),
       ...lines(r.operating.expenses),
+      ...lines(r.operating.otherOperating),
       line("Kas neto dari aktivitas operasi", r.operating.net),
       head("Arus kas dari aktivitas investasi"), ...lines(r.investing.lines), line("Kas neto dari aktivitas investasi", r.investing.net),
       head("Arus kas dari aktivitas pendanaan"), ...lines(r.financing.lines), line("Kas neto dari aktivitas pendanaan", r.financing.net),
@@ -161,8 +162,9 @@ export async function runStatement(actor: Actor, type: string, raw: unknown = {}
       line("Laba (rugi) bersih sebelum pajak penghasilan", r.profitBeforeTax),
     ];
     if (r.incomeTax.length) rows.push(head("Beban pajak penghasilan"), ...lines(r.incomeTax), line("Laba (rugi) bersih setelah pajak penghasilan", r.netProfit));
-    const taxed = (await getIncomeStatement(actor, { from, to })).receiptsOnTaxedInvoices;
-    if (taxed !== 0) rows.push(line("Catatan: penerimaan atas invoice yang memuat pajak (belum dipisah dari pendapatan)", taxed));
+    const tx = await getIncomeStatement(actor, { from, to });
+    if (tx.vatCollected !== 0) rows.push(line("Catatan: PPN yang diterima pada periode ini (dikeluarkan dari pendapatan; utang PPN 2-1210)", tx.vatCollected));
+    if (tx.withheldByCustomers !== 0) rows.push(line("Catatan: PPh yang dipotong pelanggan pada periode ini (termasuk pendapatan; kredit pajak 1-1400)", tx.withheldByCustomers));
     return { type, title: "Laporan Laba Rugi (Basis Kas)", description: "Dari buku besar: pendapatan diakui saat uang diterima; beban saat dibayar.", columns, rows, ...base };
   }
   if (type === "balance-sheet") {

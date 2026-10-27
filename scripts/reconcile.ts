@@ -4,7 +4,7 @@
  * Keluar dengan kode 1 bila ada ketidakcocokan. Hanya MEMBACA data.
  *
  * Pemeriksaan:
- *  1. cache invoices.paidAmount == Σ ledger pembayaran, balance == total − paid, status pembayaran sesuai
+ *  1. cache invoices.paidAmount == Σ ledger pembayaran (uang + PPh dipotong pelanggan), balance == total − paid, status pembayaran sesuai
  *  2. identitas total: total = subtotal − diskon tambahan + pajak + biaya tambahan; subtotal == Σ nilai bersih baris
  *  3. invoice terbit/batal memiliki nomor, snapshot, dan nomor unik; draft tidak bernomor
  *  4. penghitung nomor tidak tertinggal dari nomor terbesar yang sudah terbit pada scope-nya
@@ -13,7 +13,7 @@
  *     entri berlaku memiliki penyetuju, satu akun default aktif per jenis, pembalikan pembayaran memakai akun asal
  *  7. buku besar (tahap 2): jurnal manual seimbang & ≥ 2 baris, pembalikan persis berlawanan, tidak mendahului mulai pembukuan,
  *     tidak menyentuh akun kas/bank atau akun cadangan, jurnal saldo awal hanya akun neraca; akun sistem (3-2100, 4-1100, 1-1450) ada & aktif;
- *     akun lawan entri kas bukan akun kas/bank maupun akun cadangan
+ *     akun lawan entri kas bukan akun kas/bank maupun akun cadangan; PPN per pembayaran ≤ PPN invoice, PPh dipotong ≤ nilai sebelum PPN, pembalikan = cermin (uang, PPh, PPN)
  *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari,
  *     penerimaan invoice belum dialokasikan ke kas (saldo 1-1450), pembayaran mendahului saldo awal akunnya (dikecualikan dari buku).
  */
@@ -30,9 +30,9 @@ async function main() {
 
   add("cache pembayaran ≠ ledger", await q<{ ref: string; detail: string }>(`
     SELECT COALESCE(i."number", i."id"::text) AS ref,
-           'paid cache=' || i."paidAmount" || ' ledger=' || COALESCE(SUM(p."amount"), 0) AS detail
+           'paid cache=' || i."paidAmount" || ' ledger=' || COALESCE(SUM(p."amount" + p."withholdingAmount"), 0) AS detail
       FROM invoices i LEFT JOIN payments p ON p."invoiceId" = i."id"
-     GROUP BY i."id" HAVING i."paidAmount" <> COALESCE(SUM(p."amount"), 0)`));
+     GROUP BY i."id" HAVING i."paidAmount" <> COALESCE(SUM(p."amount" + p."withholdingAmount"), 0)`));
 
   add("saldo/status pembayaran tidak konsisten", await q(`
     SELECT COALESCE("number", "id"::text) AS ref, 'total=' || "totalAmount" || ' paid=' || "paidAmount" || ' balance=' || "balanceAmount" || ' status=' || "paymentStatus" AS detail
@@ -63,7 +63,14 @@ async function main() {
   add("pembalikan pembayaran tidak valid", await q(`
     SELECT r."id"::text AS ref, 'reversal=' || r."amount" || ' asal=' || COALESCE(o."amount"::text, 'TIDAK ADA') AS detail
       FROM payments r LEFT JOIN payments o ON o."id" = r."reversesPaymentId"
-     WHERE r."entryType" = 'REVERSAL' AND (o."id" IS NULL OR o."invoiceId" <> r."invoiceId" OR r."amount" <> -o."amount")`));
+     WHERE r."entryType" = 'REVERSAL' AND (o."id" IS NULL OR o."invoiceId" <> r."invoiceId" OR r."amount" <> -o."amount"
+           OR r."withholdingAmount" <> -o."withholdingAmount" OR r."vatAmount" <> -o."vatAmount")`));
+
+  add("PPN pembayaran melebihi PPN invoice / PPh dipotong melebihi nilai sebelum PPN", await q(`
+    SELECT COALESCE(i."number", i."id"::text) AS ref,
+           'Σ PPN=' || SUM(p."vatAmount") || ' PPN invoice=' || i."taxAmount" || ' Σ PPh dipotong=' || SUM(p."withholdingAmount") || ' nilai sebelum PPN=' || (i."totalAmount" - i."taxAmount") AS detail
+      FROM invoices i JOIN payments p ON p."invoiceId" = i."id"
+     GROUP BY i."id" HAVING SUM(p."vatAmount") > i."taxAmount" OR SUM(p."vatAmount") < 0 OR SUM(p."withholdingAmount") > i."totalAmount" - i."taxAmount" OR SUM(p."withholdingAmount") < 0`));
 
   add("invoice batal masih memiliki saldo pembayaran", await q(`
     SELECT "number" AS ref, 'paid=' || "paidAmount" AS detail FROM invoices WHERE "status" = 'CANCELLED' AND "paidAmount" <> 0`));
@@ -150,6 +157,11 @@ async function main() {
     if (b.bal < 0n) warnings.push(`saldo NEGATIF pada ${b.name}: ${b.bal}`);
     if (!b.isActive && b.bal !== 0n) warnings.push(`akun nonaktif ${b.name} masih bersaldo ${b.bal}`);
   }
+  const vatGap = await q<{ ref: string; detail: string }>(`
+    SELECT COALESCE(i."number", i."id"::text) AS ref, 'Σ PPN=' || SUM(p."vatAmount") || ' PPN invoice=' || i."taxAmount" AS detail
+      FROM invoices i JOIN payments p ON p."invoiceId" = i."id"
+     WHERE i."paymentStatus" = 'PAID' AND i."taxAmount" > 0 GROUP BY i."id" HAVING SUM(p."vatAmount") <> i."taxAmount"`);
+  for (const g of vatGap) warnings.push(`invoice lunas ${g.ref}: ${g.detail} (selisih pembulatan/pembayaran lama; tinjau di rekap PPN)`);
   const unalloc = await q<{ n: bigint; total: bigint | null }>(`SELECT COUNT(*) AS n, SUM("amount") AS total FROM payments WHERE "cashAccountId" IS NULL`);
   if (unalloc[0] && unalloc[0].n > 0n) warnings.push(`${unalloc[0].n} baris pembayaran invoice belum dialokasikan ke akun kas/bank (saldo penampung 1-1450 = ${unalloc[0].total})`);
   const preOpen = await q<{ n: bigint }>(`SELECT COUNT(*) AS n FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."paymentDate" < a."openingDate"`);

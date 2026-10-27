@@ -13,6 +13,7 @@ import {
   type BalanceSheet, type GeneralLedger, type GlAccount, type GlIncome, type GlInput, type GlLine, type JournalView, type TrialBalance,
 } from "@/lib/accounting/ledger";
 import { todayIso } from "@/lib/format";
+import { CODE_PPH_CREDIT, CODE_VAT_OUT } from "@/lib/accounting/tax";
 import { isoDate, uuid } from "@/lib/validation/common";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -23,19 +24,19 @@ export async function loadGl(upTo: string, db: Client = prisma): Promise<{ lines
   const [coa, accounts, payments, entries, transfers, manual] = await Promise.all([
     db.coaAccount.findMany({ orderBy: { code: "asc" } }),
     db.cashAccount.findMany(),
-    db.payment.findMany({ where: { paymentDate: { lte: until } }, select: { id: true, paymentDate: true, createdAt: true, amount: true, cashAccountId: true, invoice: { select: { number: true, customerNameSnapshot: true } } } }),
+    db.payment.findMany({ where: { paymentDate: { lte: until } }, select: { id: true, paymentDate: true, createdAt: true, amount: true, withholdingAmount: true, vatAmount: true, cashAccountId: true, invoice: { select: { number: true, customerNameSnapshot: true } } } }),
     db.cashEntry.findMany({ where: { status: "APPROVED", entryDate: { lte: until } }, select: { id: true, entryDate: true, createdAt: true, direction: true, amount: true, cashAccountId: true, counterAccountId: true, description: true, entryType: true } }),
     db.cashTransfer.findMany({ where: { transferDate: { lte: until } }, select: { id: true, transferDate: true, createdAt: true, fromAccountId: true, toAccountId: true, amount: true, description: true } }),
     db.journalEntry.findMany({ where: { journalDate: { lte: until } }, include: { lines: { orderBy: { lineNo: "asc" } } } }),
   ]);
-  const missing = [CODE_REVENUE, CODE_OPENING_EQUITY, CODE_UNALLOCATED].filter((code) => !coa.some((a) => a.code === code && a.isActive));
+  const missing = [CODE_REVENUE, CODE_OPENING_EQUITY, CODE_UNALLOCATED, CODE_VAT_OUT, CODE_PPH_CREDIT].filter((code) => !coa.some((a) => a.code === code && a.isActive));
   if (missing.length) {
     throw Errors.conflict(`Bagan akun belum siap (akun sistem ${missing.join(", ")} tidak ada atau nonaktif). Buka Pengaturan → Keuangan lalu terapkan bagan akun usulan.`);
   }
   const input: GlInput = {
     coa: coa.map((a) => ({ id: a.id, code: a.code, name: a.name, type: a.type })),
     accounts: accounts.map((a) => ({ id: a.id, name: a.name, kind: a.kind, openingBalance: Number(a.openingBalance), openingDate: dateToIso(a.openingDate), coaAccountId: a.coaAccountId })),
-    payments: payments.map((p) => ({ id: p.id, date: dateToIso(p.paymentDate), createdAt: p.createdAt.toISOString(), amount: Number(p.amount), accountId: p.cashAccountId, label: `invoice ${p.invoice.number ?? "—"} — ${p.invoice.customerNameSnapshot}` })),
+    payments: payments.map((p) => ({ id: p.id, date: dateToIso(p.paymentDate), createdAt: p.createdAt.toISOString(), amount: Number(p.amount), withholding: Number(p.withholdingAmount), vat: Number(p.vatAmount), accountId: p.cashAccountId, label: `invoice ${p.invoice.number ?? "—"} — ${p.invoice.customerNameSnapshot}` })),
     entries: entries.map((e) => ({ id: e.id, date: dateToIso(e.entryDate), createdAt: e.createdAt.toISOString(), direction: e.direction, amount: Number(e.amount), accountId: e.cashAccountId, counterAccountId: e.counterAccountId, description: e.description, entryType: e.entryType })),
     transfers: transfers.map((t) => ({ id: t.id, date: dateToIso(t.transferDate), createdAt: t.createdAt.toISOString(), fromId: t.fromAccountId, toId: t.toAccountId, amount: Number(t.amount), description: t.description ?? "Transfer antar akun" })),
     manual: manual.map((j) => ({ id: j.id, label: journalLabel(j.numberSeq), date: dateToIso(j.journalDate), createdAt: j.createdAt.toISOString(), description: j.description, lines: j.lines.map((l) => ({ accountId: l.accountId, debit: Number(l.debit), credit: Number(l.credit), memo: l.memo })) })),

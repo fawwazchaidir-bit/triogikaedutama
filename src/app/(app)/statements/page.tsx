@@ -46,11 +46,11 @@ export default async function StatementsPage({ searchParams }: { searchParams: P
   const q = { from, to };
   const asOfOnly = f.type === "balance-sheet" || f.type === "trial-balance";
   let error: string | null = null;
-  let cf = null, pl = null, bs = null, tb = null, gl = null, taxedNote = 0;
+  let cf = null, pl = null, bs = null, tb = null, gl = null, vatNote = 0, whNote = 0;
   const accounts = f.type === "general-ledger" ? await listCoaAccounts(user) : [];
   try {
     if (f.type === "cash-flow") cf = await getCashFlow(user, q);
-    else if (f.type === "income-statement") { pl = await getGlIncomeStatement(user, q); taxedNote = (await getIncomeStatement(user, q)).receiptsOnTaxedInvoices; }
+    else if (f.type === "income-statement") { pl = await getGlIncomeStatement(user, q); const s1 = await getIncomeStatement(user, q); vatNote = s1.vatCollected; whNote = s1.withheldByCustomers; }
     else if (f.type === "balance-sheet") bs = await getBalanceSheet(user, { to });
     else if (f.type === "trial-balance") tb = await getTrialBalance(user, { to });
     else if (f.accountId) gl = await getGeneralLedger(user, { accountId: f.accountId, ...q });
@@ -106,7 +106,12 @@ export default async function StatementsPage({ searchParams }: { searchParams: P
             <Row strong label="Laba (rugi) bersih sebelum pajak penghasilan" value={pl.profitBeforeTax} rule />
             {pl.incomeTax.length > 0 && <><Row strong label="Beban pajak penghasilan" /><Lines lines={pl.incomeTax} /><Row strong label="Laba (rugi) bersih setelah pajak penghasilan" value={pl.netProfit} rule /></>}
           </dl>
-          {taxedNote !== 0 && <p className="border-t border-line px-5 py-3 text-xs text-muted">Catatan: {R(taxedNote)} dari pendapatan berasal dari invoice yang memuat pajak; pajaknya belum dipisahkan dari pendapatan (menunggu tahap pajak).</p>}
+          {(vatNote !== 0 || whNote !== 0) && (
+            <p className="border-t border-line px-5 py-3 text-xs text-muted">
+              {vatNote !== 0 && <>PPN yang diterima pada periode ini ({R(vatNote)}) dikeluarkan dari pendapatan dan dicatat sebagai utang PPN (2-1210). </>}
+              {whNote !== 0 && <>PPh yang dipotong pelanggan ({R(whNote)}) termasuk pendapatan dan dicatat sebagai kredit pajak (1-1400), bukan uang masuk.</>}
+            </p>
+          )}
         </Card>
       )}
 

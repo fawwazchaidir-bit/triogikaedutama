@@ -29,6 +29,7 @@ export const COA_SEED: readonly CoaSeed[] = [
   sys("1-1200", "Bank", "ASET"),
   sys("1-1300", "Piutang Usaha", "ASET"),
   sys("1-1400", "Uang Muka Pajak (PPh dipotong pelanggan)", "ASET"),
+  sys("1-1410", "PPN Masukan (dapat dikreditkan)", "ASET"),
   sys("1-1450", "Penerimaan Invoice Belum Dialokasikan ke Kas/Bank", "ASET"),
   { code: "1-2100", name: "Peralatan Kantor", type: "ASET", section: "INVESTASI", manualEntry: true, isSystem: false },
   { code: "1-2200", name: "Peralatan Pelatihan & Praktik", type: "ASET", section: "INVESTASI", manualEntry: true, isSystem: false },
@@ -36,7 +37,10 @@ export const COA_SEED: readonly CoaSeed[] = [
   sys("1-2900", "Akumulasi Penyusutan", "ASET", "INVESTASI"),
   // ── Liabilitas ──
   sys("2-1100", "Utang Usaha", "KEWAJIBAN"),
-  sys("2-1200", "Utang Pajak (PPN, PPh)", "KEWAJIBAN"),
+  sys("2-1200", "Utang Pajak Lainnya (PPh 21/23/4(2) yang dipotong)", "KEWAJIBAN"),
+  // Akun pajak yang juga dapat dipilih pada entri kas (mencatat SETORAN pajak: uang keluar, utang pajak berkurang).
+  { code: "2-1210", name: "Utang PPN (PPN Keluaran)", type: "KEWAJIBAN", section: "OPERASI", manualEntry: true, isSystem: true },
+  { code: "2-1230", name: "Utang PPh Badan (angsuran PPh 25 / PPh 29)", type: "KEWAJIBAN", section: "OPERASI", manualEntry: true, isSystem: true },
   { code: "2-2100", name: "Utang Bank & Pinjaman", type: "KEWAJIBAN", section: "PENDANAAN", manualEntry: true, isSystem: false },
   // ── Ekuitas ──
   { code: "3-1100", name: "Modal Disetor", type: "EKUITAS", section: "PENDANAAN", manualEntry: true, isSystem: false },

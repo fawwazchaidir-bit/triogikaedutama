@@ -55,8 +55,14 @@ async function fuzz(seed: number, ops: number): Promise<{ posts: Post[] }> {
     { date: OPEN, code: "1-1100", dr: 1_000_000, cr: 0 }, { date: OPEN, code: "3-2100", dr: 0, cr: 1_000_000 },
   ];
   const post = (date: string, dr: string, cr: string, amount: number) => { posts.push({ date, code: dr, dr: amount, cr: 0 }, { date, code: cr, dr: 0, cr: amount }); };
-  const invoices: { id: string; balance: number }[] = [];
-  const payments: { id: string; date: string; amount: number; acctId: string | null; reversed: boolean; isReversal: boolean }[] = [];
+  /** Posting pembayaran (bertanda): Dr kas (uang) + Dr 1-1400 (PPh dipotong) / Cr 2-1210 (PPN) + Cr 4-1100 (sisanya). Diposting TERPISAH dari kode aplikasi. */
+  const postPayment = (date: string, cashCode: string, cash: number, wh: number, vat: number) => {
+    const rev = cash + wh - vat;
+    posts.push({ date, code: cashCode, dr: Math.max(cash, 0), cr: Math.max(-cash, 0) }, { date, code: "1-1400", dr: Math.max(wh, 0), cr: Math.max(-wh, 0) },
+      { date, code: "2-1210", dr: Math.max(-vat, 0), cr: Math.max(vat, 0) }, { date, code: "4-1100", dr: Math.max(-rev, 0), cr: Math.max(rev, 0) });
+  };
+  const invoices: { id: string; balance: number; cap: number; whUsed: number; tax: number; vatSum: number }[] = [];
+  const payments: { id: string; date: string; amount: number; wh: number; vat: number; invoiceId: string; acctId: string | null; reversed: boolean; isReversal: boolean }[] = [];
   const entries: { id: string; amount: number; dir: "IN" | "OUT"; acctId: string; counter: string; reversed: boolean; type: "ENTRY" | "REVERSAL" }[] = [];
   const transfers: { id: string; amount: number; from: string; to: string; reversed: boolean; type: "ENTRY" | "REVERSAL" }[] = [];
   const journals: { id: string; lines: { code: string; dr: number; cr: number }[]; reversed: boolean; type: "ENTRY" | "REVERSAL" }[] = [];
@@ -79,25 +85,33 @@ async function fuzz(seed: number, ops: number): Promise<{ posts: Post[] }> {
     await attempt(async () => {
       if (kind === "invoice") {
         const date = isoPlus(OPEN, Math.floor(r() * (span + 1)) - (r() < 0.15 ? 90 : 0)); // sebagian invoice mendahului tanggal mulai pembukuan
-        const inv = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx, { invoiceDate: date, paymentTermDays: 30, lines: [{ ...demiChefInput(fx).lines[0]!, quantity: 1 + Math.floor(r() * 5) }] }))).id);
-        invoices.push({ id: inv.id, balance: inv.amounts.total });
+        const taxed = r() < 0.5;
+        const inv = await issueInvoice(fx.finance, (await createDraft(fx.finance, demiChefInput(fx, { invoiceDate: date, paymentTermDays: 30, lines: [{ ...demiChefInput(fx).lines[0]!, quantity: 1 + Math.floor(r() * 5), taxConfigId: taxed ? fx.ppnId : null }] }))).id);
+        invoices.push({ id: inv.id, balance: inv.amounts.total, cap: inv.amounts.total - inv.amounts.tax, whUsed: 0, tax: inv.amounts.tax, vatSum: 0 });
+        if (taxed) hit("invoice-taxed");
         hit("invoice");
       } else if (kind === "payment") {
         const open = invoices.filter((x) => x.balance > 0);
         if (!open.length) return;
         const t = pick(open);
-        const amount = Math.min(t.balance, 100_000 * (1 + Math.floor(r() * 30)));
+        const settled = Math.min(t.balance, 100_000 * (1 + Math.floor(r() * 30)));
+        // sebagian pembayaran dipotong PPh oleh pelanggan (nilai acak; sistem tidak mengasumsikan tarif)
+        const wh = r() < 0.3 ? Math.min(Math.floor(settled * r() * 0.1), t.cap - t.whUsed, settled - 1) : 0;
+        const amount = settled - wh;
         const explicit = r() < 0.35 ? pick(acctIds) : null;
         const method = r() < 0.7 ? "Transfer" : "Tunai";
         const date = r() < 0.12 ? isoPlus(OPEN, -1 - Math.floor(r() * 60)) : rndDate(); // sebagian pembayaran pra-pembukuan
-        const p = await recordPayment(r() < 0.5 ? fx.staff : fx.finance, { invoiceId: t.id, paymentDate: date, amount, method, cashAccountId: explicit });
+        const p = await recordPayment(r() < 0.5 ? fx.staff : fx.finance, { invoiceId: t.id, paymentDate: date, amount, withholdingAmount: wh, withholdingRef: wh > 0 ? "BP-FUZZ" : null, method, cashAccountId: explicit });
         const acctId = p.cashAccountId;
         const expected = explicit ?? (method === "Tunai" ? fx.cashAcctId : bankDefault ? fx.bankAcctId : null);
         expect(acctId).toBe(expected);
-        t.balance -= amount;
-        payments.push({ id: p.id, date, amount, acctId, reversed: false, isReversal: false });
-        if (acctId === null) { post(date, "1-1450", "4-1100", amount); hit("pay-unallocated"); }
-        else if (date >= OPEN) { post(date, cashCoa[acctId]!, "4-1100", amount); hit("pay-allocated"); }
+        t.balance -= settled; t.whUsed += wh; t.vatSum += p.vatAmount;
+        if (t.balance === 0) expect(t.vatSum, "Σ PPN pembayaran = PPN invoice saat lunas").toBe(t.tax);
+        payments.push({ id: p.id, date, amount, wh, vat: p.vatAmount, invoiceId: t.id, acctId, reversed: false, isReversal: false });
+        if (wh > 0) hit("pay-withholding");
+        if (p.vatAmount > 0) hit("pay-vat");
+        if (acctId === null) { postPayment(date, "1-1450", amount, wh, p.vatAmount); hit("pay-unallocated"); }
+        else if (date >= OPEN) { postPayment(date, cashCoa[acctId]!, amount, wh, p.vatAmount); hit("pay-allocated"); }
         else hit("pay-preopening");
       } else if (kind === "payrev") {
         const cand = payments.filter((p) => !p.reversed && !p.isReversal);
@@ -106,11 +120,12 @@ async function fuzz(seed: number, ops: number): Promise<{ posts: Post[] }> {
         const rv = await reversePayment(fx.finance, p.id, { reason: "Fuzz pembalikan" });
         p.reversed = true;
         const inv = invoices.find((x) => x.id === rv.invoiceId)!;
-        inv.balance += p.amount;
-        payments.push({ id: rv.id, date: today, amount: -p.amount, acctId: p.acctId, reversed: false, isReversal: true });
+        inv.balance += p.amount + p.wh; inv.whUsed -= p.wh; inv.vatSum -= p.vat;
+        expect(rv.vatAmount + p.vat).toBe(0);
+        expect(rv.withholdingAmount + p.wh).toBe(0);
+        payments.push({ id: rv.id, date: today, amount: -p.amount, wh: -p.wh, vat: -p.vat, invoiceId: p.invoiceId, acctId: p.acctId, reversed: false, isReversal: true });
         // pembalikan bertanggal hari ini; akun asal tetap. Pembayaran asal yang pra-pembukuan → pembalikan (hari ini ≥ saldo awal) tetap diposting
-        if (p.acctId === null) post(today, "4-1100", "1-1450", p.amount);
-        else post(today, "4-1100", cashCoa[p.acctId]!, p.amount);
+        postPayment(today, p.acctId === null ? "1-1450" : cashCoa[p.acctId]!, -p.amount, -p.wh, -p.vat);
         hit("payrev");
         if (p.acctId !== null && p.date < OPEN) hit("payrev-of-preopening");
       } else if (kind === "toggle") {
@@ -197,10 +212,13 @@ async function sqlNet(asOf: string, from?: string): Promise<Record<string, numbe
       UNION ALL SELECT a."openingDate", '3-2100', 0, a."openingBalance" FROM cash_accounts a
       UNION ALL SELECT p."paymentDate", c."code", GREATEST(p."amount", 0), GREATEST(-p."amount", 0)
         FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" JOIN coa_accounts c ON c."id" = a."coaAccountId" WHERE p."paymentDate" >= a."openingDate"
-      UNION ALL SELECT p."paymentDate", '4-1100', GREATEST(-p."amount", 0), GREATEST(p."amount", 0)
-        FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."paymentDate" >= a."openingDate"
       UNION ALL SELECT p."paymentDate", '1-1450', GREATEST(p."amount", 0), GREATEST(-p."amount", 0) FROM payments p WHERE p."cashAccountId" IS NULL
-      UNION ALL SELECT p."paymentDate", '4-1100', GREATEST(-p."amount", 0), GREATEST(p."amount", 0) FROM payments p WHERE p."cashAccountId" IS NULL
+      UNION ALL SELECT p."paymentDate", '1-1400', GREATEST(p."withholdingAmount", 0), GREATEST(-p."withholdingAmount", 0)
+        FROM payments p LEFT JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."cashAccountId" IS NULL OR p."paymentDate" >= a."openingDate"
+      UNION ALL SELECT p."paymentDate", '2-1210', GREATEST(-p."vatAmount", 0), GREATEST(p."vatAmount", 0)
+        FROM payments p LEFT JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."cashAccountId" IS NULL OR p."paymentDate" >= a."openingDate"
+      UNION ALL SELECT p."paymentDate", '4-1100', GREATEST(-(p."amount" + p."withholdingAmount" - p."vatAmount"), 0), GREATEST(p."amount" + p."withholdingAmount" - p."vatAmount", 0)
+        FROM payments p LEFT JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."cashAccountId" IS NULL OR p."paymentDate" >= a."openingDate"
       UNION ALL SELECT e."entryDate", c."code", CASE WHEN e."direction" = 'IN' THEN e."amount" ELSE 0 END, CASE WHEN e."direction" = 'OUT' THEN e."amount" ELSE 0 END
         FROM cash_entries e JOIN cash_accounts a ON a."id" = e."cashAccountId" JOIN coa_accounts c ON c."id" = a."coaAccountId" WHERE e."status" = 'APPROVED'
       UNION ALL SELECT e."entryDate", k."code", CASE WHEN e."direction" = 'OUT' THEN e."amount" ELSE 0 END, CASE WHEN e."direction" = 'IN' THEN e."amount" ELSE 0 END
@@ -294,7 +312,7 @@ describe("fuzz buku besar: model bayangan = oracle SQL = mesin aplikasi", () => 
 
 describe("cakupan gabungan fuzz", () => {
   it("setiap jenis skenario penting terjadi minimal sekali di seluruh seed", () => {
-    for (const k of ["invoice", "pay-allocated", "pay-unallocated", "pay-preopening", "payrev", "payrev-of-preopening", "expense", "ditolak-pengeluaran", "batal-pengeluaran", "income", "financing", "investing", "transfer", "trrev", "entryrev", "journal", "jrev"]) {
+    for (const k of ["invoice", "invoice-taxed", "pay-withholding", "pay-vat", "pay-allocated", "pay-unallocated", "pay-preopening", "payrev", "payrev-of-preopening", "expense", "ditolak-pengeluaran", "batal-pengeluaran", "income", "financing", "investing", "transfer", "trrev", "entryrev", "journal", "jrev"]) {
       expect(allCov[k] ?? 0, `cakupan gabungan ${k}`).toBeGreaterThan(0);
     }
   });

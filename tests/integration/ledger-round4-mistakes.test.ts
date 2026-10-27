@@ -213,15 +213,15 @@ describe("D9–D13 kondisi tepi laporan & konfigurasi", () => {
     expect((await runStatement(fx.finance, "trial-balance", { to: "2025-12-31" })).totals).not.toBeNull();
   });
 
-  it("D18 invoice ber-PPN: penerimaan dicatat bruto sebagai pendapatan dan laporan memberi catatan (pajak belum dipisah)", async () => {
+  it("D18 invoice ber-PPN: PPN dikeluarkan dari pendapatan dan menjadi utang PPN; laporan memberi catatan", async () => {
     const d = await createDraft(fx.finance, demiChefInput(fx, { invoiceDate: "2026-01-13", paymentTermDays: 30, lines: [{ ...demiChefInput(fx).lines[0]!, quantity: 1, taxConfigId: fx.ppnId }] }));
     const inv = await issueInvoice(fx.finance, d.id);
     expect(inv.amounts.total).toBe(2_220_000); // 2.000.000 + PPN 11% (eksklusif)
     await recordPayment(fx.finance, { invoiceId: inv.id, paymentDate: "2026-01-20", amount: 2_220_000, method: "Transfer" });
-    expect((await net())["4-1100"]).toBe(-2_220_000);
+    expect((await net())["4-1100"]).toBe(-2_000_000);
+    expect((await net())["2-1210"]).toBe(-220_000);
     const stmt = await runStatement(fx.finance, "income-statement", { from: "2026-01-01", to: today });
-    expect(stmt.rows.some((r) => /memuat pajak/.test(String(r.item)))).toBe(true);
-    expect(stmt.disclaimer).toMatch(/PPN/);
+    expect(stmt.rows.some((r) => /PPN yang diterima/.test(String(r.item)))).toBe(true);
     await assertBooksSound("D18");
   });
 

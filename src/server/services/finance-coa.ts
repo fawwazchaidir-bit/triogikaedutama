@@ -65,7 +65,7 @@ function checkConsistency(code: string, type: string, section: string, manualEnt
   if (!TYPE_DIGIT[type]!.includes(code[0]!)) {
     throw Errors.validation(`Kode ${code} tidak sesuai jenis ${type} (digit pertama harus ${TYPE_DIGIT[type]!.join("/")}).`, { code: "Digit pertama tidak sesuai jenis akun" });
   }
-  const expected = type === "ASET" ? ["INVESTASI", "OPERASI"] : [DEFAULT_SECTION[type]!];
+  const expected = type === "ASET" ? ["INVESTASI", "OPERASI"] : type === "KEWAJIBAN" ? [DEFAULT_SECTION[type]!, "OPERASI"] : [DEFAULT_SECTION[type]!];
   if (!expected.includes(section)) throw Errors.validation(`Kelompok arus kas ${section} tidak sesuai untuk akun ${type}.`, { section: "Tidak sesuai jenis akun" });
   if (manualEntry && type === "ASET" && section !== "INVESTASI") {
     throw Errors.validation("Akun aset yang dapat dipilih pada entri kas harus berkelompok INVESTASI.", { section: "Harus INVESTASI" });

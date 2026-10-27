@@ -12,6 +12,7 @@
  * Karena setiap jurnal seimbang, neraca saldo selalu seimbang dan Aset = Liabilitas + Ekuitas (diuji, termasuk fuzz).
  */
 import type { StmtAccount } from "./statements";
+import { CODE_PPH_CREDIT, CODE_VAT_OUT } from "./tax";
 
 export const CODE_REVENUE = "4-1100";
 export const CODE_OPENING_EQUITY = "3-2100";
@@ -40,7 +41,8 @@ export interface GlLine {
 }
 
 export interface GlCashAccount extends StmtAccount { coaAccountId: string }
-export interface GlPayment { id: string; date: string; createdAt: string; amount: number; accountId: string | null; label: string }
+/** `amount` = uang masuk (BERTANDA); `withholding` = PPh dipotong pelanggan (tanpa uang); `vat` = bagian PPN dari amount+withholding. Pembalikan: semuanya negatif. */
+export interface GlPayment { id: string; date: string; createdAt: string; amount: number; withholding: number; vat: number; accountId: string | null; label: string }
 export interface GlEntry { id: string; date: string; createdAt: string; direction: "IN" | "OUT"; amount: number; accountId: string; counterAccountId: string; description: string; entryType: "ENTRY" | "REVERSAL" }
 export interface GlTransfer { id: string; date: string; createdAt: string; fromId: string; toId: string; amount: number; description: string }
 export interface GlManualJournal { id: string; label: string; date: string; createdAt: string; description: string; lines: { accountId: string; debit: number; credit: number; memo: string | null }[] }
@@ -78,6 +80,8 @@ export function deriveLines(input: GlInput): GlLine[] {
   for (const a of input.accounts) {
     push({ date: a.openingDate, order: `0-${a.id}`, source: "OPENING_CASH", sourceId: a.id, sourceLabel: "Saldo awal", description: `Saldo awal ${a.name}`, dr: a.coaAccountId, cr: openingEquity, amount: a.openingBalance });
   }
+  const pphCredit = byCode(coa, CODE_PPH_CREDIT).id;
+  const vatOut = byCode(coa, CODE_VAT_OUT).id;
   for (const p of input.payments) {
     let cashSide: string;
     if (p.accountId === null) cashSide = unallocated;
@@ -87,9 +91,18 @@ export function deriveLines(input: GlInput): GlLine[] {
       if (p.date < a.openingDate) continue; // pra-pembukuan: sudah termasuk saldo awal
       cashSide = a.coaAccountId;
     }
-    const desc = `${p.amount < 0 ? "Pembalikan pembayaran" : "Pembayaran"} ${p.label}`;
-    if (p.amount >= 0) push({ date: p.date, order: `1-${p.createdAt}${p.id}`, source: "INVOICE_PAYMENT", sourceId: p.id, sourceLabel: p.label, description: desc, dr: cashSide, cr: revenue, amount: p.amount });
-    else push({ date: p.date, order: `1-${p.createdAt}${p.id}`, source: "INVOICE_PAYMENT", sourceId: p.id, sourceLabel: p.label, description: desc, dr: revenue, cr: cashSide, amount: -p.amount });
+    // Pembayaran: Dr kas (uang) + Dr 1-1400 (PPh dipotong) / Cr 2-1210 (PPN) + Cr 4-1100 (pendapatan = sisanya). Pembalikan: kebalikannya.
+    const sign = p.amount < 0 ? -1 : 1;
+    const cash = Math.abs(p.amount), wh = Math.abs(p.withholding), vat = Math.abs(p.vat);
+    const base = { date: p.date, order: `1-${p.createdAt}${p.id}`, source: "INVOICE_PAYMENT" as const, sourceId: p.id, sourceLabel: p.label, description: `${sign < 0 ? "Pembalikan pembayaran" : "Pembayaran"} ${p.label}` };
+    const legs: { account: string; amount: number; debit: boolean }[] = [
+      { account: cashSide, amount: cash, debit: true }, { account: pphCredit, amount: wh, debit: true },
+      { account: vatOut, amount: vat, debit: false }, { account: revenue, amount: cash + wh - vat, debit: false },
+    ];
+    const posted = legs.filter((l) => l.amount !== 0).map((l) => ({ ...l, debit: sign > 0 ? l.debit : !l.debit }));
+    for (const l of [...posted.filter((x) => x.debit), ...posted.filter((x) => !x.debit)]) { // sisi debit lebih dulu
+      lines.push({ ...base, accountId: l.account, debit: l.debit ? l.amount : 0, credit: l.debit ? 0 : l.amount });
+    }
   }
   for (const e of input.entries) {
     const a = acct.get(e.accountId);

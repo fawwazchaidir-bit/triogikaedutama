@@ -121,7 +121,7 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
               {payments.length === 0 ? <EmptyState title="Belum ada pembayaran" description={inv.status === "ISSUED" ? "Catat pembayaran lewat tombol di atas." : undefined} /> : (
                 <TableWrap>
                   <Table>
-                    <thead><tr><Th>Tanggal</Th><Th>Jenis</Th><Th>Metode / referensi</Th><Th align="right">Nominal</Th><Th>Dicatat oleh</Th><Th>Bukti</Th><Th align="right">Aksi</Th></tr></thead>
+                    <thead><tr><Th>Tanggal</Th><Th>Jenis</Th><Th>Metode / referensi</Th><Th align="right">Uang diterima</Th><Th align="right">PPh dipotong</Th><Th>Dicatat oleh</Th><Th>Bukti</Th><Th align="right">Aksi</Th></tr></thead>
                     <tbody>
                       {payments.map((p) => (
                         <tr key={p.id} className={cn(p.entryType === "REVERSAL" && "bg-brand-50/40")}>
@@ -129,6 +129,7 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
                           <Td>{p.entryType === "REVERSAL" ? <Badge tone="red">Pembalikan</Badge> : p.isDownPayment ? <Badge tone="blue">Down Payment</Badge> : <Badge>Pembayaran</Badge>}{p.reversedByPaymentId && <Badge tone="gray" className="ml-1">Sudah dibalik</Badge>}</Td>
                           <Td>{p.method}{p.reference ? ` · ${p.reference}` : ""}{p.reason && <span className="block text-xs text-muted">Alasan: {p.reason}</span>}{p.note && <span className="block text-xs text-muted">{p.note}</span>}</Td>
                           <Td align="right" className={cn(p.amount < 0 && "text-brand-700")}>{R(p.amount)}</Td>
+                          <Td align="right">{p.withholdingAmount ? <>{R(p.withholdingAmount)}{p.withholdingRef && <span className="block text-xs text-muted">{p.withholdingRef}</span>}</> : "—"}</Td>
                           <Td>{p.recordedByName}</Td>
                           <Td>{p.proofFileId ? <a className="text-brand-700 underline" href={`/api/files/${p.proofFileId}`}>Unduh</a> : "—"}</Td>
                           <Td align="right">{canReverse && p.entryType === "PAYMENT" && !p.reversedByPaymentId ? <PaymentReverseButton paymentId={p.id} amount={p.amount} invoiceNumber={inv.number} /> : null}</Td>

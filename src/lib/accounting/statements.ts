@@ -13,8 +13,8 @@ export interface StmtAccount { id: string; name: string; kind: "KAS" | "BANK"; o
 
 export interface StmtCounter { id: string; code: string; name: string; type: "ASET" | "KEWAJIBAN" | "EKUITAS" | "PENDAPATAN" | "BEBAN"; section: "OPERASI" | "INVESTASI" | "PENDANAAN" }
 
-/** Pembayaran invoice (BERTANDA: pembalikan negatif). */
-export interface StmtPayment { date: string; amount: number; accountId: string | null; onTaxedInvoice?: boolean }
+/** Pembayaran invoice (BERTANDA: pembalikan negatif). `amount` = uang masuk; `withholding` = PPh dipotong pelanggan; `vat` = bagian PPN. */
+export interface StmtPayment { date: string; amount: number; withholding: number; vat: number; accountId: string | null }
 /** Entri kas manual yang DISETUJUI (termasuk pembalikan). */
 export interface StmtEntry { date: string; direction: "IN" | "OUT"; amount: number; accountId: string; counter: StmtCounter }
 export interface StmtTransfer { date: string; fromId: string; toId: string; amount: number }
@@ -34,7 +34,8 @@ export interface CashFlowReport {
   from: string; to: string;
   beginning: number;
   newOpening: number;
-  operating: { invoiceReceipts: number; otherIncome: Line[]; expenses: Line[]; net: number };
+  /** `otherOperating` = penerimaan/pembayaran non-laba-rugi berkelompok OPERASI, mis. SETORAN pajak (kas keluar, utang pajak berkurang). */
+  operating: { invoiceReceipts: number; otherIncome: Line[]; expenses: Line[]; otherOperating: Line[]; net: number };
   investing: { lines: Line[]; net: number };
   financing: { lines: Line[]; net: number };
   netChange: number;
@@ -101,10 +102,11 @@ export function buildCashFlow(data: StmtData, from: string, to: string): CashFlo
   const otherIncome = groupByCounter(entryRows.filter((r) => r.counter.type === "PENDAPATAN"));
   const expenses = groupByCounter(entryRows.filter((r) => r.counter.type === "BEBAN"));
   const rest = entryRows.filter((r) => r.counter.type !== "PENDAPATAN" && r.counter.type !== "BEBAN");
+  const otherOperating = groupByCounter(rest.filter((r) => r.counter.section === "OPERASI"));
   const investing = groupByCounter(rest.filter((r) => r.counter.section === "INVESTASI"));
-  const financing = groupByCounter(rest.filter((r) => r.counter.section !== "INVESTASI"));
+  const financing = groupByCounter(rest.filter((r) => r.counter.section === "PENDANAAN"));
 
-  const operatingNet = invoiceReceipts + sumLines(otherIncome) + sumLines(expenses);
+  const operatingNet = invoiceReceipts + sumLines(otherIncome) + sumLines(expenses) + sumLines(otherOperating);
   const investingNet = sumLines(investing);
   const financingNet = sumLines(financing);
   const netChange = operatingNet + investingNet + financingNet;
@@ -135,7 +137,7 @@ export function buildCashFlow(data: StmtData, from: string, to: string): CashFlo
 
   return {
     from, to, beginning, newOpening,
-    operating: { invoiceReceipts, otherIncome, expenses, net: operatingNet },
+    operating: { invoiceReceipts, otherIncome, expenses, otherOperating, net: operatingNet },
     investing: { lines: investing, net: investingNet },
     financing: { lines: financing, net: financingNet },
     netChange, ending, accounts, notInBalances,
@@ -151,8 +153,10 @@ export interface IncomeStatement {
   operatingProfit: number;
   otherIncome: Line[]; totalOtherIncome: number;
   netProfitBeforeTax: number;
-  /** Penerimaan atas invoice yang memuat pajak — BELUM dipisah dari pendapatan (menunggu tahap pajak). */
-  receiptsOnTaxedInvoices: number;
+  /** PPN pada penerimaan periode ini (dikeluarkan dari pendapatan; menjadi utang PPN 2-1210). */
+  vatCollected: number;
+  /** PPh yang dipotong pelanggan pada periode ini (menambah pendapatan, menjadi kredit pajak 1-1400; bukan uang masuk). */
+  withheldByCustomers: number;
 }
 
 /** Kelompok beban menurut digit pertama kode akun: 5 = beban langsung program; lainnya = beban operasional. */
@@ -162,8 +166,10 @@ export function buildIncomeStatement(data: StmtData, from: string, to: string): 
   // Penerimaan yang mendahului tanggal saldo awal akunnya adalah PRA-PEMBUKUAN (sudah termasuk saldo awal) — tidak menjadi pendapatan periode pembukuan.
   const open = new Map(data.accounts.map((a) => [a.id, a.openingDate]));
   const counted = data.payments.filter((p) => inRange(p.date, from, to) && !(p.accountId && open.has(p.accountId) && p.date < open.get(p.accountId)!));
-  const revenue = counted.reduce((s, p) => s + p.amount, 0);
-  const receiptsOnTaxedInvoices = counted.filter((p) => p.onTaxedInvoice).reduce((s, p) => s + p.amount, 0);
+  // Pendapatan = uang masuk + PPh yang dipotong pelanggan − PPN (PPN bukan pendapatan; ia titipan kepada negara).
+  const revenue = counted.reduce((s, p) => s + p.amount + p.withholding - p.vat, 0);
+  const vatCollected = counted.reduce((s, p) => s + p.vat, 0);
+  const withheldByCustomers = counted.reduce((s, p) => s + p.withholding, 0);
   const rows = data.entries.filter((e) => inRange(e.date, from, to)).map((e) => ({ counter: e.counter, signed: e.direction === "IN" ? e.amount : -e.amount }));
   // Beban dilaporkan POSITIF (pengeluaran neto pembalikan).
   const costs = groupByCounter(rows.filter((r) => r.counter.type === "BEBAN")).map((l) => ({ ...l, amount: -l.amount }));
@@ -177,7 +183,7 @@ export function buildIncomeStatement(data: StmtData, from: string, to: string): 
   const operatingProfit = grossProfit - totalOperatingCosts;
   return {
     from, to, revenue, directCosts, totalDirectCosts, grossProfit, operatingCosts, totalOperatingCosts,
-    operatingProfit, otherIncome, totalOtherIncome, netProfitBeforeTax: operatingProfit + totalOtherIncome, receiptsOnTaxedInvoices,
+    operatingProfit, otherIncome, totalOtherIncome, netProfitBeforeTax: operatingProfit + totalOtherIncome, vatCollected, withheldByCustomers,
   };
 }
 

@@ -10,6 +10,7 @@ import { writeAudit } from "../audit";
 import { lockInvoice } from "./invoice-lock";
 import { resolvePaymentAccount } from "./cash-accounts";
 import { derivePaymentStatus } from "@/lib/finance/calculate";
+import { vatForPayment } from "@/lib/accounting/tax";
 import { isValidIsoDate } from "@/lib/finance/due-date";
 import { formatRupiah } from "@/lib/finance/money";
 import { todayIso } from "@/lib/format";
@@ -22,17 +23,33 @@ import type { Paged, PaymentDto } from "@/lib/types";
  * ═══════════ LEDGER PEMBAYARAN ═══════════
  *  • Setiap pembayaran = satu baris `payments` yang TIDAK PERNAH diubah/dihapus (dijaga trigger DB).
  *  • Koreksi = baris REVERSAL bernilai negatif yang menunjuk pembayaran asal (sekali saja).
- *  • Total dibayar invoice = Σ amount semua baris (PAYMENT positif + REVERSAL negatif).
+ *  • Total dibayar (dilunasi) invoice = Σ (amount + withholdingAmount) semua baris (PAYMENT positif + REVERSAL negatif):
+ *    `amount` = uang yang benar-benar masuk; `withholdingAmount` = PPh yang dipotong pelanggan (bukti potong) — melunasi invoice tanpa uang.
+ *    `vatAmount` = bagian PPN dari nilai yang dilunasi, dibekukan saat dicatat (lihat `vatForPayment`).
  *    Kolom cache invoices.paidAmount/balanceAmount/paymentStatus diperbarui di transaksi yang SAMA,
  *    di bawah kunci baris invoice. `npm run db:reconcile` memverifikasi cache == ledger.
  *  • Pembayaran melebihi sisa tagihan DITOLAK (tidak ada mekanisme kelebihan bayar tanpa otorisasi khusus).
  */
 
+/**
+ * PPN untuk pembayaran baru pada invoice ini (dipanggil di dalam transaksi, SETELAH lockInvoice).
+ * Memakai total/PPN invoice dan Σ pembayaran sebelumnya; hasilnya dibekukan pada baris pembayaran.
+ */
+export async function vatForNewPayment(tx: Tx, invoiceId: string, settled: number): Promise<number> {
+  const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { totalAmount: true, taxAmount: true } });
+  if (Number(inv.taxAmount) <= 0) return 0;
+  const agg = await tx.payment.aggregate({ where: { invoiceId }, _sum: { amount: true, withholdingAmount: true, vatAmount: true } });
+  return vatForPayment({
+    total: Number(inv.totalAmount), vat: Number(inv.taxAmount), settled,
+    settledBefore: Number(agg._sum.amount ?? 0n) + Number(agg._sum.withholdingAmount ?? 0n), vatBefore: Number(agg._sum.vatAmount ?? 0n),
+  });
+}
+
 /** Hitung ulang cache invoice dari ledger. Panggil di dalam transaksi, SETELAH lockInvoice. */
 export async function applyLedger(tx: Tx, invoiceId: string): Promise<{ paid: number; balance: number; status: "UNPAID" | "PARTIALLY_PAID" | "PAID" }> {
-  const agg = await tx.payment.aggregate({ where: { invoiceId }, _sum: { amount: true } });
+  const agg = await tx.payment.aggregate({ where: { invoiceId }, _sum: { amount: true, withholdingAmount: true } });
   const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { totalAmount: true } });
-  const paid = Number(agg._sum.amount ?? 0n);
+  const paid = Number(agg._sum.amount ?? 0n) + Number(agg._sum.withholdingAmount ?? 0n);
   const total = Number(inv.totalAmount);
   const status = derivePaymentStatus(total, paid);
   await tx.invoice.update({
@@ -56,6 +73,7 @@ const paymentInclude = {
 export const toPaymentDto = (p: PaymentRow): PaymentDto => ({
   id: p.id, invoiceId: p.invoiceId, invoiceNumber: p.invoice.number, customerName: p.invoice.customerNameSnapshot,
   entryType: p.entryType, paymentDate: dateToIso(p.paymentDate), amount: Number(p.amount), method: p.method,
+  withholdingAmount: Number(p.withholdingAmount), withholdingRef: p.withholdingRef, vatAmount: Number(p.vatAmount),
   reference: p.reference, note: p.note, reason: p.reason, isDownPayment: p.isDownPayment, proofFileId: p.proofFileId,
   recordedByName: p.recordedBy.name, createdAt: p.createdAt.toISOString(),
   reversedByPaymentId: p.reversal?.id ?? null, reversesPaymentId: p.reversesPaymentId,
@@ -65,7 +83,11 @@ export const toPaymentDto = (p: PaymentRow): PaymentDto => ({
 export const paymentInputSchema = z.object({
   invoiceId: uuid,
   paymentDate: isoDate.refine(isValidIsoDate, "Tanggal pembayaran tidak valid"),
+  /** Uang yang benar-benar diterima (neto setelah PPh yang dipotong pelanggan). */
   amount: rupiah("Nominal pembayaran").min(1, "Nominal pembayaran harus lebih dari 0"),
+  /** PPh yang dipotong pelanggan (mis. PPh 23) sesuai bukti potong; ikut melunasi invoice tetapi bukan uang masuk. */
+  withholdingAmount: z.preprocess((v) => (v === "" || v === undefined || v === null ? 0 : v), rupiah("PPh dipotong pelanggan")),
+  withholdingRef: optionalText(60, "Nomor bukti potong"),
   method: requiredText(2, 40, "Metode pembayaran"),
   reference: optionalText(120, "Referensi transfer"),
   note: optionalText(500, "Catatan"),
@@ -89,19 +111,32 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
     }
     const balance = Number(inv.balanceAmount);
     if (balance <= 0) throw Errors.conflict("Invoice ini sudah lunas.");
-    if (input.amount > balance) {
-      throw Errors.validation(`Nominal melebihi sisa tagihan (${formatRupiah(balance, "PLAIN")}).`, {
-        amount: `Maksimal ${formatRupiah(balance, "PLAIN")}`,
+    const settled = input.amount + input.withholdingAmount;
+    if (settled > balance) {
+      throw Errors.validation(`Nominal${input.withholdingAmount ? " + PPh dipotong" : ""} melebihi sisa tagihan (${formatRupiah(balance, "PLAIN")}).`, {
+        [input.withholdingAmount ? "withholdingAmount" : "amount"]: `Maksimal ${formatRupiah(balance, "PLAIN")}${input.withholdingAmount ? " (uang + PPh dipotong)" : ""}`,
       });
+    }
+    if (input.withholdingAmount > 0) {
+      // Pemotongan tidak mungkin melebihi nilai jasa sebelum PPN (total − PPN). Tarif TIDAK diasumsikan; ketepatan nilai mengikuti bukti potong.
+      const cap = Number(inv.totalAmount) - Number(inv.taxAmount);
+      const priorWh = Number((await tx.payment.aggregate({ where: { invoiceId: inv.id }, _sum: { withholdingAmount: true } }))._sum.withholdingAmount ?? 0n);
+      if (priorWh + input.withholdingAmount > cap) {
+        throw Errors.validation(`Total PPh dipotong pada invoice ini tidak boleh melebihi nilai sebelum PPN (${formatRupiah(cap, "PLAIN")}).`, { withholdingAmount: "Melebihi nilai invoice sebelum PPN" });
+      }
+    } else if (input.withholdingRef) {
+      throw Errors.validation("Nomor bukti potong hanya diisi bila ada PPh yang dipotong.", { withholdingRef: "Isi PPh dipotong lebih dulu" });
     }
     if (input.proofFileId) {
       const f = await tx.storedFile.findUnique({ where: { id: input.proofFileId }, select: { kind: true } });
       if (f?.kind !== "PAYMENT_PROOF") throw Errors.validation("Bukti pembayaran tidak valid.", { proofFileId: "File tidak valid" });
     }
     const cashAccountId = await resolvePaymentAccount(tx, input.method, input.cashAccountId);
+    const vatAmount = await vatForNewPayment(tx, inv.id, settled);
     const p = await tx.payment.create({
       data: {
         invoiceId: inv.id, entryType: "PAYMENT", paymentDate: isoToDate(input.paymentDate), amount: BigInt(input.amount),
+        withholdingAmount: BigInt(input.withholdingAmount), withholdingRef: input.withholdingAmount > 0 ? input.withholdingRef : null, vatAmount: BigInt(vatAmount),
         method: input.method, reference: input.reference, note: input.note, proofFileId: input.proofFileId, cashAccountId, recordedById: actor.userId,
       },
       include: paymentInclude,
@@ -111,7 +146,7 @@ export async function recordPayment(actor: Actor, raw: unknown): Promise<Payment
       action: "payment.record", entityType: "Invoice", entityId: inv.id,
       summary: `Pembayaran ${formatRupiah(input.amount, "PLAIN")} dicatat pada invoice ${inv.number}`,
       before: { paid: Number(inv.paidAmount), balance },
-      after: { paymentId: p.id, amount: input.amount, method: input.method, reference: input.reference, cashAccountId, paid: after.paid, balance: after.balance, paymentStatus: after.status },
+      after: { paymentId: p.id, amount: input.amount, withholding: input.withholdingAmount, vat: vatAmount, method: input.method, reference: input.reference, cashAccountId, paid: after.paid, balance: after.balance, paymentStatus: after.status },
     });
     return toPaymentDto(p);
   });
@@ -142,7 +177,8 @@ export async function reversePayment(actor: Actor, paymentId: string, raw: unkno
     const p = await tx.payment.create({
       data: {
         invoiceId: orig.invoiceId, entryType: "REVERSAL", reversesPaymentId: orig.id, paymentDate: isoToDate(today),
-        amount: -orig.amount, method: orig.method, reference: orig.reference, reason, cashAccountId: orig.cashAccountId, recordedById: actor.userId,
+        amount: -orig.amount, withholdingAmount: -orig.withholdingAmount, withholdingRef: orig.withholdingRef, vatAmount: -orig.vatAmount,
+        method: orig.method, reference: orig.reference, reason, cashAccountId: orig.cashAccountId, recordedById: actor.userId,
       },
       include: paymentInclude,
     });

@@ -537,6 +537,13 @@ model Payment {
   reason            String?
   isDownPayment     Boolean          @default(false)
   proofFileId       String?          @db.Uuid
+  /// PPh yang dipotong pelanggan (mis. PPh 23) pada pembayaran ini: ikut melunasi invoice tetapi BUKAN uang masuk (menjadi kredit pajak, akun 1-1400).
+  /// Positif untuk PAYMENT, negatif untuk REVERSAL (cermin pembayaran asal).
+  withholdingAmount BigInt           @default(0)
+  /// Nomor bukti potong dari pelanggan.
+  withholdingRef    String?
+  /// Bagian PPN dari (amount + withholdingAmount), dibekukan saat dicatat (kumulatif proporsional terhadap pajak invoice). Negatif untuk REVERSAL.
+  vatAmount         BigInt           @default(0)
   /// Akun kas/bank penerima (null = belum dialokasikan, mis. dicatat sebelum modul kas dikonfigurasi).
   cashAccountId     String?          @db.Uuid
   recordedById      String           @db.Uuid

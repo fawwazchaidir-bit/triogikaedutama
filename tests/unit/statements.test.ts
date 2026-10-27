@@ -21,10 +21,10 @@ const kas: StmtAccount = { id: "kas", name: "Kas", kind: "KAS", openingBalance: 
 const data = (): StmtData => ({
   accounts: [bank, kas],
   payments: [
-    { date: "2026-01-10", amount: 5_000_000, accountId: "bank" },
-    { date: "2026-01-12", amount: 9_000_000, accountId: "bank", onTaxedInvoice: true },
-    { date: "2026-02-03", amount: -5_000_000, accountId: "bank" }, // pembalikan pembayaran 10 Jan
-    { date: "2026-01-15", amount: 2_000_000, accountId: null }, // belum dialokasikan
+    { date: "2026-01-10", amount: 5_000_000, withholding: 0, vat: 0, accountId: "bank" },
+    { date: "2026-01-12", amount: 9_000_000, withholding: 0, vat: 0, accountId: "bank" },
+    { date: "2026-02-03", amount: -5_000_000, withholding: 0, vat: 0, accountId: "bank" }, // pembalikan pembayaran 10 Jan
+    { date: "2026-01-15", amount: 2_000_000, withholding: 0, vat: 0, accountId: null }, // belum dialokasikan
   ],
   entries: [
     { date: "2026-01-05", direction: "IN", amount: 20_000_000, accountId: "bank", counter: modal },
@@ -77,7 +77,7 @@ describe("arus kas — hitungan tangan", () => {
   it("akun yang mulai di tengah periode: saldo awalnya bukan arus; mutasi sebelum tanggal saldo awal diabaikan", () => {
     const late: StmtAccount = { id: "late", name: "Bank Baru", kind: "BANK", openingBalance: 500_000, openingDate: "2026-02-15" };
     const d: StmtData = {
-      accounts: [bank, late], payments: [{ date: "2026-02-01", amount: 700_000, accountId: "late" }, { date: "2026-02-20", amount: 300_000, accountId: "late" }],
+      accounts: [bank, late], payments: [{ date: "2026-02-01", amount: 700_000, withholding: 0, vat: 0, accountId: "late" }, { date: "2026-02-20", amount: 300_000, withholding: 0, vat: 0, accountId: "late" }],
       entries: [], transfers: [],
     };
     const r = buildCashFlow(d, "2026-02-01", "2026-02-28");
@@ -99,7 +99,8 @@ describe("laba rugi basis kas — hitungan tangan", () => {
     expect(r.operatingCosts.map((l) => [l.code, l.amount])).toEqual([["6-1600", 275_000]]);
     expect(r.operatingProfit).toBe(12_725_000);
     expect(r.netProfitBeforeTax).toBe(12_725_000);
-    expect(r.receiptsOnTaxedInvoices).toBe(9_000_000);
+    expect(r.vatCollected).toBe(0);
+    expect(r.withheldByCustomers).toBe(0);
   });
   it("Februari: pembalikan membuat beban negatif (mengurangi), pendapatan negatif", () => {
     const r = buildIncomeStatement(data(), "2026-02-01", "2026-02-28");
@@ -141,9 +142,11 @@ describe("bagan akun usulan", () => {
     for (const a of COA_SEED) {
       expect(a.code, a.code).toMatch(/^[0-9]-[0-9]{4}$/);
       expect(digit[a.type]!, a.code).toContain(a.code[0]);
-      expect(a.isSystem && a.manualEntry, a.code).toBe(false);
+      // Satu-satunya akun sistem yang boleh dipilih pada entri kas: akun utang pajak (untuk mencatat SETORAN pajak, arus kas operasi).
+      const taxRemittance = ["2-1210", "2-1230"].includes(a.code);
+      expect(a.isSystem && a.manualEntry, a.code).toBe(taxRemittance);
       if (a.manualEntry && a.type === "ASET") expect(a.section).toBe("INVESTASI");
-      if (a.manualEntry && (a.type === "KEWAJIBAN" || a.type === "EKUITAS")) expect(a.section).toBe("PENDANAAN");
+      if (a.manualEntry && (a.type === "KEWAJIBAN" || a.type === "EKUITAS")) expect(a.section).toBe(taxRemittance ? "OPERASI" : "PENDANAAN");
     }
     // akun yang dicadangkan untuk tahap berikutnya tidak boleh dipilih manual
     for (const code of ["1-1100", "1-1200", "1-1300", "1-1400", "2-1100", "2-1200", "3-2100", "4-1100", "6-2000", "7-1100"]) {
@@ -169,7 +172,7 @@ describe("properti (300 data acak): identitas laporan selalu berlaku", () => {
       const counters = [honor, atk, bunga, alat, modal];
       const payments = Array.from({ length: Math.floor(r() * 12) }, () => {
         const a = pick(accounts); const date = dayOf(Math.floor(r() * 120));
-        return { date, amount: (r() < 0.2 ? -1 : 1) * (1 + Math.floor(r() * 3_000_000)), accountId: a.id };
+        return { date, amount: (r() < 0.2 ? -1 : 1) * (1 + Math.floor(r() * 3_000_000)), withholding: 0, vat: 0, accountId: a.id };
       });
       const entries = Array.from({ length: Math.floor(r() * 15) }, () => {
         const a = pick(accounts); const c = pick(counters);

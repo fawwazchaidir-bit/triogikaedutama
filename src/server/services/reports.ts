@@ -125,17 +125,17 @@ export async function runReport(actor: Actor, type: string, raw: unknown = {}): 
     case "payments": {
       const r = await prisma.$queryRaw<Record<string, unknown>[]>`
         SELECT p."paymentDate", i."number", i."customerNameSnapshot" AS customer, p."entryType", p."isDownPayment" AS dp, p."method", p."reference",
-               p."amount", p."reason", u."name" AS recorder
+               p."amount", p."withholdingAmount" AS wh, p."vatAmount" AS vat, p."reason", u."name" AS recorder
           FROM payments p JOIN invoices i ON i."id" = p."invoiceId" JOIN users u ON u."id" = p."recordedById"
          WHERE p."paymentDate" BETWEEN ${isoToDate(from)} AND ${isoToDate(to)} AND i."status" NOT IN ('DRAFT','SUBMITTED') ${customer}
          ORDER BY p."paymentDate", p."createdAt"`;
-      columns = [date("date", "Tanggal Bayar"), text("number", "Invoice", 14), text("customer", "Pelanggan"), text("type", "Jenis", 16), text("method", "Metode", 14), text("reference", "Referensi", 22), money("amount", "Nominal"), text("note", "Keterangan", 28), text("recorder", "Dicatat Oleh", 18)];
+      columns = [date("date", "Tanggal Bayar"), text("number", "Invoice", 14), text("customer", "Pelanggan"), text("type", "Jenis", 16), text("method", "Metode", 14), text("reference", "Referensi", 22), money("amount", "Uang Diterima"), money("wh", "PPh Dipotong Pelanggan"), money("vat", "PPN dalam Pembayaran"), text("note", "Keterangan", 28), text("recorder", "Dicatat Oleh", 18)];
       rows = r.map((x) => ({
         date: d(x.paymentDate as Date), number: x.number as string, customer: x.customer as string,
         type: x.entryType === "REVERSAL" ? "Pembalikan" : x.dp ? "Down Payment" : "Pembayaran", method: x.method as string,
-        reference: (x.reference as string) ?? null, amount: n(x.amount), note: (x.reason as string) ?? null, recorder: x.recorder as string,
+        reference: (x.reference as string) ?? null, amount: n(x.amount), wh: n(x.wh), vat: n(x.vat), note: (x.reason as string) ?? null, recorder: x.recorder as string,
       }));
-      totals = { date: "PENERIMAAN KAS BERSIH", amount: sum(rows, "amount") };
+      totals = { date: "PENERIMAAN KAS BERSIH", amount: sum(rows, "amount"), wh: sum(rows, "wh"), vat: sum(rows, "vat") };
       break;
     }
     case "receivables":

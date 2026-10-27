@@ -25,7 +25,7 @@ export function RecordPaymentDialog(props: { open: boolean; onClose: () => void;
 }
 
 function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClose: () => void; invoice: PayableInvoice; onDone: () => void }) {
-  const [pay, setPay] = useState({ date: today(), amount: invoice.balanceAmount as number | null, method: "Transfer", reference: "", note: "", cashAccountId: "" });
+  const [pay, setPay] = useState({ date: today(), amount: invoice.balanceAmount as number | null, withholding: null as number | null, withholdingRef: "", method: "Transfer", reference: "", note: "", cashAccountId: "" });
   const [accounts, setAccounts] = useState<CashAccountOptionDto[]>([]);
   useEffect(() => {
     let live = true;
@@ -49,7 +49,7 @@ function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClos
         if (!res.ok) throw new ApiClientError(j.error?.message ?? "Gagal mengunggah bukti.", res.status, j.error?.code ?? "UNKNOWN", j.error?.fieldErrors);
         proofFileId = j.data.id;
       }
-      await api("/api/payments", { body: { invoiceId: invoice.id, paymentDate: pay.date, amount: pay.amount ?? 0, method: pay.method, reference: pay.reference, note: pay.note, proofFileId, cashAccountId: pay.cashAccountId || null } });
+      await api("/api/payments", { body: { invoiceId: invoice.id, paymentDate: pay.date, amount: pay.amount ?? 0, withholdingAmount: pay.withholding ?? 0, withholdingRef: pay.withholding ? pay.withholdingRef : "", method: pay.method, reference: pay.reference, note: pay.note, proofFileId, cashAccountId: pay.cashAccountId || null } });
       setBusy(false);
       onDone();
     } catch (e) {
@@ -65,7 +65,7 @@ function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClos
       footer={<><Button onClick={onClose} disabled={busy}>Batal</Button><Button variant="primary" loading={busy} onClick={submit}>Simpan pembayaran</Button></>}>
       <div className="grid gap-4 sm:grid-cols-2">
         <TextField label="Tanggal pembayaran" type="date" required value={pay.date} onChange={(e) => setPay({ ...pay, date: e.target.value })} error={fe.paymentDate} />
-        <MoneyInput label="Nominal" required value={pay.amount} onChange={(v) => setPay({ ...pay, amount: v })} error={fe.amount} hint="Tidak boleh melebihi sisa tagihan" />
+        <MoneyInput label="Nominal" required value={pay.amount} onChange={(v) => setPay({ ...pay, amount: v })} error={fe.amount} hint="Uang yang benar-benar diterima. Uang + PPh dipotong tidak boleh melebihi sisa tagihan" />
         <SelectField label="Metode" value={pay.method} onChange={(e) => setPay({ ...pay, method: e.target.value })} error={fe.method}>{METHODS.map((m) => <option key={m}>{m}</option>)}</SelectField>
         {accounts.length > 0 && (
           <SelectField label="Diterima di" className="sm:col-span-2" value={pay.cashAccountId} onChange={(e) => setPay({ ...pay, cashAccountId: e.target.value })} error={fe.cashAccountId}
@@ -74,6 +74,10 @@ function PaymentDialogBody({ onClose, invoice, onDone }: { open: boolean; onClos
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </SelectField>
         )}
+        <MoneyInput label="PPh dipotong pelanggan (opsional)" value={pay.withholding}
+          onChange={(v) => setPay((p) => ({ ...p, withholding: v, amount: p.amount === invoice.balanceAmount - (p.withholding ?? 0) ? Math.max(invoice.balanceAmount - (v ?? 0), 0) : p.amount }))}
+          error={fe.withholdingAmount} hint="Mis. PPh 23 sesuai bukti potong. Ikut melunasi invoice, tetapi bukan uang masuk" />
+        {(pay.withholding ?? 0) > 0 && <TextField label="Nomor bukti potong" value={pay.withholdingRef} onChange={(e) => setPay({ ...pay, withholdingRef: e.target.value })} error={fe.withholdingRef} placeholder="Opsional, bisa dilengkapi kemudian lewat catatan" />}
         <TextField label="Referensi transfer" value={pay.reference} onChange={(e) => setPay({ ...pay, reference: e.target.value })} error={fe.reference} placeholder="No. referensi / berita transfer" />
         <TextAreaField className="sm:col-span-2" label="Catatan" rows={2} value={pay.note} onChange={(e) => setPay({ ...pay, note: e.target.value })} error={fe.note} />
         <div className="sm:col-span-2">

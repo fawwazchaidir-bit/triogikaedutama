@@ -8,7 +8,8 @@ import { accountBalance, buildIncomeStatement, type StmtData } from "@/lib/accou
 /** PUTARAN 1 (tahap 2, unit) — buku besar basis kas; seluruh angka dihitung tangan di komentar. */
 const mk = (code: string, name: string, type: CoaType): GlAccount => ({ id: `a-${code}`, code, name, type });
 const COA: GlAccount[] = [
-  mk("1-1100", "Kas", "ASET"), mk("1-1200", "Bank", "ASET"), mk("1-1450", "Penerimaan belum dialokasikan", "ASET"),
+  mk("1-1100", "Kas", "ASET"), mk("1-1200", "Bank", "ASET"), mk("1-1400", "PPh dibayar dimuka", "ASET"), mk("1-1450", "Penerimaan belum dialokasikan", "ASET"),
+  mk("2-1210", "Utang PPN", "KEWAJIBAN"), mk("2-1230", "Utang PPh badan", "KEWAJIBAN"),
   mk("1-2100", "Peralatan", "ASET"), mk("1-2900", "Akumulasi penyusutan", "ASET"), mk("2-2100", "Utang bank", "KEWAJIBAN"),
   mk("3-1100", "Modal", "EKUITAS"), mk("3-1200", "Prive", "EKUITAS"), mk("3-2100", "Saldo laba", "EKUITAS"),
   mk("4-1100", "Pendapatan jasa", "PENDAPATAN"), mk("4-2200", "Bunga", "PENDAPATAN"),
@@ -24,11 +25,11 @@ function base(): GlInput {
     coa: COA,
     accounts: [ca("bank", "1-1200", 10_000_000, "2026-01-01"), ca("kas", "1-1100", 1_000_000, "2026-01-01", "KAS")],
     payments: [
-      { id: "p1", date: "2026-01-10", createdAt: at(), amount: 5_000_000, accountId: "bank", label: "invoice 00434" },
-      { id: "p2", date: "2026-01-12", createdAt: at(), amount: 9_000_000, accountId: "bank", label: "invoice 00435" },
-      { id: "p3", date: "2026-01-15", createdAt: at(), amount: 2_000_000, accountId: null, label: "invoice 00436" },
-      { id: "p4", date: "2026-02-03", createdAt: at(), amount: -5_000_000, accountId: "bank", label: "invoice 00434" },
-      { id: "p0", date: "2025-12-20", createdAt: at(), amount: 700_000, accountId: "bank", label: "invoice 00001" }, // pra-pembukuan
+      { id: "p1", date: "2026-01-10", createdAt: at(), amount: 5_000_000, withholding: 0, vat: 0, accountId: "bank", label: "invoice 00434" },
+      { id: "p2", date: "2026-01-12", createdAt: at(), amount: 9_000_000, withholding: 0, vat: 0, accountId: "bank", label: "invoice 00435" },
+      { id: "p3", date: "2026-01-15", createdAt: at(), amount: 2_000_000, withholding: 0, vat: 0, accountId: null, label: "invoice 00436" },
+      { id: "p4", date: "2026-02-03", createdAt: at(), amount: -5_000_000, withholding: 0, vat: 0, accountId: "bank", label: "invoice 00434" },
+      { id: "p0", date: "2025-12-20", createdAt: at(), amount: 700_000, withholding: 0, vat: 0, accountId: "bank", label: "invoice 00001" }, // pra-pembukuan
     ],
     entries: [
       { id: "e1", date: "2026-01-05", createdAt: at(), direction: "IN", amount: 20_000_000, accountId: "bank", counterAccountId: id("3-1100"), description: "Setoran modal", entryType: "ENTRY" },
@@ -89,7 +90,7 @@ describe("penurunan jurnal dari kejadian kas", () => {
     const d = base();
     const lines = deriveLines(d);
     const stmt: StmtData = {
-      accounts: d.accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, accountId: p.accountId })),
+      accounts: d.accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, withholding: p.withholding, vat: p.vat, accountId: p.accountId })),
       entries: d.entries.map((e) => ({ date: e.date, direction: e.direction, amount: e.amount, accountId: e.accountId, counter: { id: e.counterAccountId, code: "x", name: "x", type: "BEBAN", section: "OPERASI" } })),
       transfers: d.transfers.map((t) => ({ date: t.date, fromId: t.fromId, toId: t.toId, amount: t.amount })),
     };
@@ -117,7 +118,7 @@ describe("neraca (laporan posisi keuangan)", () => {
   it("lintas tahun: laba tahun lalu menjadi 'saldo laba sebelumnya', laba tahun ini terpisah; tetap seimbang", () => {
     const d = base();
     d.accounts = [ca("bank", "1-1200", 1_000_000, "2025-01-01")];
-    d.payments = [{ id: "a", date: "2025-06-10", createdAt: "1", amount: 10_000_000, accountId: "bank", label: "i1" }, { id: "b", date: "2026-02-10", createdAt: "2", amount: 3_000_000, accountId: "bank", label: "i2" }];
+    d.payments = [{ id: "a", date: "2025-06-10", createdAt: "1", amount: 10_000_000, withholding: 0, vat: 0, accountId: "bank", label: "i1" }, { id: "b", date: "2026-02-10", createdAt: "2", amount: 3_000_000, withholding: 0, vat: 0, accountId: "bank", label: "i2" }];
     d.entries = [{ id: "c", date: "2025-07-01", createdAt: "3", direction: "OUT", amount: 4_000_000, accountId: "bank", counterAccountId: id("5-1100"), description: "Honor", entryType: "ENTRY" }];
     d.transfers = []; d.manual = [];
     const lines = deriveLines(d);
@@ -157,7 +158,7 @@ describe("laba rugi dari buku besar & buku besar per akun", () => {
     const g = glIncome(lines, COA, "2026-01-01", "2026-01-31");
     expect(g).toMatchObject({ totalRevenue: 16_000_000, totalDirectCosts: 3_000_000, grossProfit: 13_000_000, totalOperatingCosts: 375_000, profitBeforeTax: 12_625_000, netProfit: 12_625_000 });
     const stage1 = buildIncomeStatement({
-      accounts: d.accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, accountId: p.accountId })),
+      accounts: d.accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, withholding: p.withholding, vat: p.vat, accountId: p.accountId })),
       entries: d.entries.map((e) => ({ date: e.date, direction: e.direction, amount: e.amount, accountId: e.accountId, counter: { id: e.counterAccountId, code: COA.find((a) => a.id === e.counterAccountId)!.code, name: "x", type: COA.find((a) => a.id === e.counterAccountId)!.type, section: "OPERASI" } })),
       transfers: [],
     }, "2026-01-01", "2026-01-31");
@@ -203,7 +204,7 @@ describe("properti (400 data acak): buku besar selalu seimbang & konsisten denga
       const open = (a: string) => accounts.find((x) => x.id === a)!.openingDate;
       const d: GlInput = {
         coa: COA, accounts,
-        payments: Array.from({ length: Math.floor(r() * 10) }, () => { const a = r() < 0.15 ? null : pick(accounts).id; return { id: `p${n}`, date: dayOf(Math.floor(r() * 400)), createdAt: String(n++).padStart(6, "0"), amount: (r() < 0.2 ? -1 : 1) * (1 + Math.floor(r() * 2_000_000)), accountId: a, label: "inv" }; }),
+        payments: Array.from({ length: Math.floor(r() * 10) }, () => { const a = r() < 0.15 ? null : pick(accounts).id; return { id: `p${n}`, date: dayOf(Math.floor(r() * 400)), createdAt: String(n++).padStart(6, "0"), amount: (r() < 0.2 ? -1 : 1) * (1 + Math.floor(r() * 2_000_000)), withholding: 0, vat: 0, accountId: a, label: "inv" }; }),
         entries: Array.from({ length: Math.floor(r() * 14) }, () => { const a = pick(accounts).id; const c = pick(counters); const date = dayOf(Math.max(Math.floor(r() * 400), Math.round((Date.parse(open(a)) - Date.parse("2025-01-01")) / 86_400_000))); return { id: `e${n}`, date, createdAt: String(n++).padStart(6, "0"), direction: pick(["IN", "OUT"] as const), amount: 1 + Math.floor(r() * 1_500_000), accountId: a, counterAccountId: id(c), description: "x", entryType: "ENTRY" as const }; }),
         transfers: [], manual: [],
       };
@@ -216,7 +217,7 @@ describe("properti (400 data acak): buku besar selalu seimbang & konsisten denga
       const bs = balanceSheet(lines, COA, asOf);
       expect(bs.balanced, `seed ${seed}: neraca (selisih ${bs.difference})`).toBe(true);
       const stmt: StmtData = {
-        accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, accountId: p.accountId })),
+        accounts, payments: d.payments.map((p) => ({ date: p.date, amount: p.amount, withholding: p.withholding, vat: p.vat, accountId: p.accountId })),
         entries: d.entries.map((e) => { const c = COA.find((a) => a.id === e.counterAccountId)!; return { date: e.date, direction: e.direction, amount: e.amount, accountId: e.accountId, counter: { id: c.id, code: c.code, name: c.name, type: c.type, section: "OPERASI" as const } }; }),
         transfers: d.transfers.map((t) => ({ date: t.date, fromId: t.fromId, toId: t.toId, amount: t.amount })),
       };
