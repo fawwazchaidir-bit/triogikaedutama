@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { z } from "zod";
-import { Download } from "lucide-react";
 import { requirePagePermission } from "@/server/auth/current";
 import { getCorporateTax, getTaxOverview, getVatSummary, getWithholdingRegister, listTaxPayments, TAX_DISCLAIMER } from "@/server/services/finance-tax";
 import { env } from "@/server/env";
@@ -10,6 +9,7 @@ import { Card, CardHeader, Notice, PageHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { FilterBar, FilterField, filterInput } from "@/components/filter-bar";
 import { Table, TableWrap, Td, Th } from "@/components/ui/table";
+import { ExportLinks } from "@/components/export-links";
 import { PostTaxJournalButton, TaxPaymentButton, TaxProfileButton, TaxYearInputButton, WithholdingRefButton } from "@/components/tax-forms";
 import { can } from "@/lib/permissions";
 import { buildQuery } from "@/lib/invoice-can";
@@ -63,15 +63,6 @@ export default async function TaxesPage({ searchParams }: { searchParams: Promis
     <Link key={id} href={`/taxes${buildQuery({ tab: id })}`} aria-current={f.tab === id ? "page" : undefined}
       className={cn("rounded-md px-3 py-1.5 text-sm font-medium", f.tab === id ? "bg-ink text-white" : "text-ink-soft hover:bg-black/5")}>{LABEL[id]}</Link>
   );
-  const exportHref = (kind: string, format: "csv" | "xlsx", extra: Record<string, string | number | undefined>) => `/api/finance/taxes/${kind}${buildQuery({ ...extra, format })}`;
-  const exportLinks = (kind: string, extra: Record<string, string | number | undefined>) => (
-    <div className="flex gap-2">
-      {(["csv", "xlsx"] as const).map((fmt) => (
-        <a key={fmt} href={exportHref(kind, fmt, extra)} className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium shadow-sm hover:bg-canvas"><Download className="size-4" />{fmt === "csv" ? "CSV" : "Excel"}</a>
-      ))}
-    </div>
-  );
-
   return (
     <div>
       <PageHeader title="Pajak" description="Rekap PPN, PPh yang dipotong pelanggan, estimasi PPh badan, dan setoran pajak. Estimasi manajemen dari pembukuan basis kas — bukan SPT."
@@ -109,7 +100,7 @@ export default async function TaxesPage({ searchParams }: { searchParams: Promis
 
       {vat && (
         <Card>
-          <CardHeader title="Rekap PPN keluaran" description={`${formatDateLong(vat.from)} – ${formatDateLong(vat.to)}${vat.isPkp ? "" : " · profil belum menandai PKP"}`} actions={exportLinks("vat", { from, to })} />
+          <CardHeader title="Rekap PPN keluaran" description={`${formatDateLong(vat.from)} – ${formatDateLong(vat.to)}${vat.isPkp ? "" : " · profil belum menandai PKP"}`} actions={<ExportLinks base="/api/finance/taxes/vat" params={{ from, to }} size="sm" />} />
           <TableWrap>
             <Table>
               <thead><tr><Th>Masa</Th><Th align="right">Invoice ber-PPN</Th><Th align="right">DPP (invoice)</Th><Th align="right">PPN (invoice)</Th><Th align="right">PPN diterima kas</Th><Th align="right">Disetor</Th><Th align="right">Penyesuaian</Th><Th align="right">Utang PPN akhir</Th></tr></thead>
@@ -130,7 +121,7 @@ export default async function TaxesPage({ searchParams }: { searchParams: Promis
 
       {reg && (
         <Card>
-          <CardHeader title="Register PPh dipotong pelanggan" description={`${formatDateLong(reg.from)} – ${formatDateLong(reg.to)} · neto ${R(reg.net)}${reg.missingRef ? ` · ${reg.missingRef} belum ada nomor bukti potong (${R(reg.missingRefAmount)})` : ""}`} actions={exportLinks("pph23", { from, to })} />
+          <CardHeader title="Register PPh dipotong pelanggan" description={`${formatDateLong(reg.from)} – ${formatDateLong(reg.to)} · neto ${R(reg.net)}${reg.missingRef ? ` · ${reg.missingRef} belum ada nomor bukti potong (${R(reg.missingRefAmount)})` : ""}`} actions={<ExportLinks base="/api/finance/taxes/pph23" params={{ from, to }} size="sm" />} />
           {reg.rows.length === 0 ? <p className="px-5 py-8 text-center text-sm text-muted">Belum ada pembayaran yang dipotong PPh pada periode ini.</p> : (
             <TableWrap>
               <Table>
@@ -163,7 +154,7 @@ export default async function TaxesPage({ searchParams }: { searchParams: Promis
             <Card>
               <CardHeader title={`Estimasi PPh badan${corp.month ? ` (final) ${MONTHS[corp.month - 1]} ${corp.year}` : ` tahun ${corp.year}`}`}
                 description={`${formatDateLong(corp.from)} – ${formatDateLong(corp.to)}${corp.partial ? " (berjalan)" : ""} · tarif ${((prof.rateBps ?? 0) / 100).toFixed(2)}%`}
-                actions={<div className="flex flex-wrap gap-2">{canJournal && prof.regime === "GENERAL" && <TaxYearInputButton year={corp.year} input={corp.input} />}{exportLinks("corporate", { year: corp.year, month: corp.month ?? undefined })}</div>} />
+                actions={<div className="flex flex-wrap gap-2">{canJournal && prof.regime === "GENERAL" && <TaxYearInputButton year={corp.year} input={corp.input} />}<ExportLinks base="/api/finance/taxes/corporate" params={{ year: corp.year, month: corp.month ?? undefined }} size="sm" /></div>} />
               <dl className="max-w-3xl px-5 py-4 text-sm">
                 {([
                   ["Laba (rugi) sebelum pajak penghasilan menurut pembukuan", corp.commercialProfit, false],

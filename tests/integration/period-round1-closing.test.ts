@@ -158,7 +158,7 @@ describe("buka kembali", () => {
     expect(await getBooksLock()).toBe("2026-02-28");
 
     const re = await reopenPeriod(fx.finance, { year: 2026, month: 2, reason: "ATK Februari terlewat dicatat" });
-    expect(re).toMatchObject({ state: "REOPENED", reopenReason: "ATK Februari terlewat dicatat", canClose: true, canReopen: false });
+    expect(re).toMatchObject({ state: "REOPENED", reopenReason: "ATK Februari terlewat dicatat", canClose: true, canReopen: false, snapshot: null, verified: null }); // foto lama tidak ditampilkan sebagai angka berlaku
     expect(await getBooksLock()).toBe("2026-01-31");
     expect((await row(1)).canReopen).toBe(true); // Januari kini periode terakhir yang tertutup
 

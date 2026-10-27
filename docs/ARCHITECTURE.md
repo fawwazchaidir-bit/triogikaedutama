@@ -201,6 +201,12 @@ Karena Pembayaran dan Laporan memuat data seluruh invoice, Staff memang melihat 
 | Membalikkan entri kas / transfer | ✔ | ✔ | — |
 | Kas & Bank (saldo, buku kas), Laporan Keuangan (laba rugi, arus kas), ekspor | ✔ | ✔ | — |
 | Bagan akun, akun kas/bank, **saldo awal** | ✔ kelola | lihat | — |
+| Jurnal manual (catat) · pembalikan jurnal | ✔ | ✔ | — |
+| **Pajak**: lihat rekap/register/estimasi · catat setoran | ✔ | ✔ | — |
+| Mengisi no. bukti potong pada pembayaran (`payment:record`) | ✔ | ✔ | ✔ (via API; tanpa halaman Pajak) |
+| Profil pajak (PKP, rezim & tarif PPh badan) | ✔ | lihat | — |
+| **Rekonsiliasi bank** (impor, cocokkan, finalisasi, buka kembali) | ✔ | ✔ | — |
+| **Tutup buku** bulanan (tutup · buka kembali periode terakhir) | ✔ | ✔ | — |
 
 Pencatat tidak dapat menyetujui entrinya sendiri (maker-checker, ditegakkan di service).
 
@@ -237,8 +243,8 @@ Deviasi sadar dari referensi: (a) **A4 landscape** (atas permintaan revisi; refe
 
 ## 10b. Modul keuangan — tahap 1 (basis kas, SAK EMKM)
 
-Cakupan tahap 1: **pengeluaran, kas & bank, arus kas, laba rugi (basis kas)**. Neraca, jurnal berpasangan, buku besar, dan penutupan buku ada di **tahap 2** (§10c).
-Rekonsiliasi bank dan pajak (PPN, PPh 23 yang dipotong pelanggan, PPh badan) adalah tahap berikutnya. Seluruh data tahap 1 dirancang kompatibel dengan jurnal
+Cakupan tahap 1: **pengeluaran, kas & bank, arus kas, laba rugi (basis kas)**. Neraca, jurnal berpasangan, dan buku besar ada di **tahap 2** (§10c); pajak di §10d,
+rekonsiliasi bank di §10e, tutup buku bulanan di §10f, laporan (pembanding, PDF, kecocokan kas) di §10g. Seluruh data tahap 1 dirancang kompatibel dengan jurnal
 (setiap entri kas = akun kas ↔ akun lawan di bagan akun), sehingga tahap 2 menurunkan jurnal dari data yang sama.
 
 | Tabel | Isi | Imutabilitas (trigger/CHECK DB) |
@@ -276,16 +282,72 @@ Prinsip desain: **jurnal kejadian kas tidak disimpan — diturunkan** dari tabel
 | `journal_entries`, `journal_lines` | **append-only**; `debit`/`credit` ≥ 0 dan tepat satu sisi > 0; **trigger konstrain tertunda**: saat COMMIT setiap jurnal ≥ 2 baris dan Σ debit = Σ kredit; pembalikan harus **persis** kebalikan per akun, sekali saja; tanggal ≥ tanggal mulai pembukuan (saldo awal akun kas tertua); jurnal `OPENING` tepat pada tanggal itu dan hanya akun neraca; akun aktif |
 | akun terlarang bagi jurnal manual | akun yang dipetakan ke kas/bank, **4-1100**, **1-1450**, **3-2200** (dijaga trigger DB) |
 | pemetaan akun kas ↔ bagan akun | akun kas/bank hanya boleh dipetakan ke akun aset non-manual (bukan akun sistem selain 1-1100/1-1200) yang belum punya jurnal manual & belum jadi akun lawan entri kas; akun lawan entri kas tak boleh akun kas/bank; kode/jenis akun yang sudah dijurnal terkunci. Perubahan pemetaan memegang kunci advisory **eksklusif**, setiap sisipan jurnal/entri memegang kunci **bersama** (tak ada balapan) |
-| `company_settings.booksLockedThrough` | **Penutupan buku** (opsional): pembayaran, entri kas, transfer, jurnal, persetujuan pengeluaran, dan saldo awal akun bertanggal ≤ tanggal tutup ditolak (service + trigger). Koreksi = pembalikan bertanggal hari ini. Tanggal tutup harus < hari ini; mengubah/membuka wajib beralasan & tercatat di audit (`books.lock`/`books.reopen`) |
+| `company_settings.booksLockedThrough` | **Kunci buku**: pembayaran, entri kas, transfer, jurnal, persetujuan pengeluaran, penerbitan invoice ber-PPN, dan saldo awal akun bertanggal ≤ tanggal kunci ditolak (service + trigger). Koreksi = pembalikan bertanggal hari ini. Nilainya **tidak diatur bebas**: dipelihara trigger dari periode yang ditutup lewat halaman Tutup Buku (§10f) |
 
 **Identitas yang diuji:** neraca saldo selalu seimbang; Aset = Liabilitas + Ekuitas; saldo buku besar 1-1100/1-1200 = saldo akun kas di modul kas; laba rugi buku besar = laba rugi tahap 1 ± jurnal manual
 (penyusutan, pajak). Neraca **menghitung** laba ditahan (laba tahun-tahun sebelumnya) dan laba tahun berjalan dari akun laba rugi — tidak ada jurnal penutup yang disimpan, sehingga tidak ada langkah
-"tutup tahun" yang bisa terlupa atau salah. Akun 3-2200 karenanya dicadangkan. Pajak tetap **belum diotomasi** (jurnal manual boleh mencatat beban pajak/utang pajak, tanpa tarif yang diasumsikan).
+"tutup tahun" yang bisa terlupa atau salah. Akun 3-2200 karenanya dicadangkan. Pajak diotomasi sebagian di §10d (PPN keluaran, PPh dipotong pelanggan, estimasi PPh badan) tanpa tarif yang diasumsikan.
 
 **Pengujian tahap 2 (4 putaran + penutupan buku):** A — skenario perusahaan hitung-tangan lewat service (`ledger-round1-recording`); B — adversarial: SQL langsung ke tabel jurnal, pemetaan akun, input aneh,
 balapan (`ledger-round2-adversarial`); C — fuzz berbasis model dengan **tiga pembanding independen** (buku bayangan di tes, oracle SQL murni, mesin aplikasi) pada banyak tanggal + `db:reconcile`
 bersih/rusak-terdeteksi (`ledger-round3-fuzz`); D — kesalahan pencatatan lazim (salah kategori, pembayaran ganda/salah akun, jurnal salah nominal, kas minus, invoice dibatalkan, bagan akun belum siap, dst.)
 (`ledger-round4-mistakes`); E — penutupan buku (`ledger-round5-period-lock`). Uji mutasi (merusak mesin/trigger dengan sengaja) memastikan tes benar-benar gagal bila ada yang rusak.
+
+## 10d. Pajak (PPN keluaran, PPh dipotong pelanggan, estimasi PPh badan)
+
+**Tidak ada tarif atau aturan pajak yang diasumsikan sistem.** PPN mengikuti pajak yang sudah tercetak pada invoice; PPh yang dipotong pelanggan diinput dari bukti potong; rezim, tarif,
+koreksi fiskal, kompensasi rugi, dan fasilitas PPh badan adalah masukan Administrator/Finance Manager. Semua keluaran = **estimasi manajemen**, bukan SPT (penafian ada di setiap laporan pajak).
+
+| Hal | Rancangan |
+|---|---|
+| Kolom `payments` | `amount` tetap **uang yang benar-benar masuk**; `withholdingAmount` (PPh dipotong pelanggan; ikut melunasi invoice tetapi bukan uang), `withholdingRef` (no. bukti potong), `vatAmount` (bagian PPN, **dibekukan** saat dicatat). `payments_entry_shape` (CHECK), pembalikan = cermin persis (uang, PPh, PPN) dijaga trigger |
+| PPN per pembayaran | `vatForPayment` (`src/lib/accounting/tax.ts`): kumulatif proporsional terhadap pajak invoice, Σ PPN semua pembayaran = PPN invoice tepat (selisih pembulatan jatuh pada pembayaran yang melunasi); DP ikut dipecah |
+| Jurnal turunan pembayaran | Dr kas (uang) + Dr **1-1400** Uang Muka Pajak (PPh dipotong) / Cr **2-1210** Utang PPN + Cr **4-1100** Pendapatan (= uang + PPh − PPN). Pendapatan = nilai sebelum PPN |
+| Batas PPh dipotong | uang + PPh ≤ sisa tagihan; PPh ≤ nilai invoice sebelum PPN (`total − pajak`) |
+| Setoran pajak | **kas keluar** (`cash:record`) dengan akun lawan 2-1210 / 2-1230 (arus kas operasi, **bukan beban**) |
+| Profil pajak | `company_settings`: `isPkp`, `corporateTaxRegime` (`NONE`/`GENERAL`/`FINAL`), tarif dalam basis poin (CHECK konsisten) — hanya Administrator (`finance:manage`); masukan tahunan (`tax_year_inputs`) dan jurnal estimasi memakai `journal:record` (Finance Manager/Admin) |
+| Estimasi PPh badan | `GENERAL`: PKP = max(laba sebelum pajak + koreksi fiskal − kompensasi rugi, 0); `FINAL`: bruto di luar PPN × tarif. Jurnal penyesuaian disarankan (Dr 7-1100 / Cr 2-1230) dihitung ulang di server dan dibukukan **atomik** di bawah kunci advisory (tak mungkin ganda) |
+| Laporan | `/taxes`: ringkasan, rekap PPN (menurut **invoice** vs menurut **penerimaan kas** vs setoran, dan PPN atas invoice yang belum dilunasi), register PPh dipotong (+ pelengkapan no. bukti potong), estimasi PPh badan, setoran; semuanya CSV/Excel/PDF |
+
+**Catatan basis kas:** PPN dibukukan saat uang diterima, sedangkan kewajiban PPN menurut faktur pajak bisa timbul lebih awal. Karena itu rekap PPN selalu menampilkan dua sisi dan nilai "PPN atas invoice belum lunas".
+Kewajiban pelaporan tetap pada konsultan pajak. Pengujian: `tax-round1..3` + unit `tax.test.ts` (hitung-tangan, adversarial/SQL, fuzz dengan oracle independen, uji mutasi).
+
+## 10e. Rekonsiliasi bank
+
+Rekening koran (impor CSV; format angka/tanggal Indonesia **dan** Inggris terdeteksi, pemetaan kolom otomatis dapat dipratinjau) dicocokkan dengan transaksi buku akun bank yang sama.
+
+* **Selisih** = saldo akhir bank + Σ transaksi buku beredar (belum cocok, ≤ akhir periode) − saldo buku pada akhir periode. **Harus 0 untuk difinalisasi**; mutasi harus sama dengan selisih saldo awal/akhir; saldo awal harus menyambung dengan periode final sebelumnya.
+* Pencocokan satu baris ↔ banyak transaksi (setoran gabungan), jumlah harus persis; satu transaksi hanya sekali per akun (indeks unik di DB). `autoMatch` hanya mengambil yang **tak ambigu** (jumlah sama, tanggal ≤ jendela, satu kandidat).
+* Baris yang tak ada di buku (biaya admin, bunga) dicatat langsung dari mutasi (membuat entri kas + mencocokkannya; kategori sesuai arah).
+* `DRAFT → FINALIZED`; yang final **tidak dapat diubah**; hanya yang terakhir pada akun itu dapat dibuka kembali (alasan wajib, audit). Hak: `bank:reconcile` (Finance Manager/Admin); Staff tidak punya akses.
+* Laporan rekonsiliasi (ringkasan, transaksi beredar, mutasi + status cocok) dapat diunduh CSV/Excel/PDF. Pengujian: `bank-round1..3` (fuzz dengan "bank" sebagai kebenaran independen) + unit `bank-recon.test.ts`; `db:reconcile` memeriksa mutasi, pencocokan, dan saldo menyambung.
+
+## 10f. Tutup buku bulanan
+
+Penutupan **per bulan, berurutan**, menggantikan kunci tanggal bebas (§10c). Tabel `accounting_periods` + trigger:
+
+| Aturan | Penegakan |
+|---|---|
+| Hanya status `CLOSED` yang dapat disisipkan; berurutan dari **bulan mulai pembukuan** (saldo awal akun tertua); bulan sudah berakhir (hari terakhirnya sudah lewat); bulan sebelumnya sudah ditutup | trigger `accounting_periods_guard` + service |
+| Buka kembali hanya **periode terakhir yang ditutup** (alasan ≥ 5 karakter, audit); foto/hash/waktu tutup tidak dapat diubah; tidak dapat dihapus | trigger + CHECK |
+| `booksLockedThrough` = akhir bulan periode CLOSED terakhir | trigger `accounting_periods_sync_lock` (satu sumber kebenaran; `listPeriods.lockConsistent` + `db:reconcile` menandai bila diubah di luar prosedur) |
+| Penutupan menunggu transaksi yang sedang mencatat dan menolak yang datang sesudahnya | kunci advisory `books_lock`: **eksklusif** saat tutup/buka, **bersama** pada setiap trigger pencatatan |
+
+**Daftar periksa** (`periods.ts`): **WAJIB** — bulan sudah berakhir; bulan sebelumnya ditutup; **foto semua periode tertutup sebelumnya masih cocok** (hash neraca saldo dihitung ulang); neraca saldo & neraca seimbang;
+saldo buku besar kas/bank = modul kas; tidak ada pengeluaran menunggu persetujuan bertanggal ≤ akhir bulan. **PERINGATAN** (harus diakui satu per satu + catatan wajib; tersimpan di periode): penerimaan belum dialokasikan (1-1450),
+saldo kas negatif, rekonsiliasi bank belum final sampai akhir bulan (hanya rekening bank yang punya mutasi bulan itu), bukti potong belum lengkap, draft/diajukan bertanggal ≤ akhir bulan, estimasi PPh badan belum dibukukan (Desember/rezim final).
+Penutupan menyimpan **foto** (neraca saldo, total aset/liabilitas/ekuitas, pendapatan & laba bulan itu) + **sha256**; `listPeriods` dan `db:reconcile` (SQL murni, total aset) mendeteksi perubahan diam-diam pada angka periode tertutup.
+Halaman `/closing`; API `/api/finance/periods{,/checklist,/close,/reopen}`; hak `books:lock`. Pengujian: `period-round1..3` (hitung-tangan; SQL/balapan/tamper; fuzz dengan model bayangan + oracle SQL + pembekuan neraca saldo), E2E, 16 mutan.
+
+## 10g. Laporan keuangan: pembanding, PDF, kecocokan kas
+
+* **Lima laporan** (`/statements`): laba rugi, neraca, arus kas, neraca saldo, buku besar per akun — semuanya dari buku besar yang sama dengan jurnal; tersedia JSON/CSV/Excel/**PDF** (`/api/finance/statements/:type?format=`), tercatat di audit.
+* **Pembanding** (`compare=previous|year`) untuk laba rugi, neraca, arus kas: kolom *periode ini / pembanding / selisih / %*. Rentang bulan penuh dibandingkan dengan **bulan kalender** sebelumnya (bukan N hari mundur); neraca membandingkan dua tanggal posisi.
+  Logika murni di `src/lib/accounting/compare.ts` (unit + fuzz: kolom pembanding selalu identik dengan laporan biasa pada rentang masing-masing; total tetap = jumlah baris).
+* **Kecocokan kas:** saldo kas & bank akhir menurut arus kas harus = saldo akun kas/bank di buku besar (neraca); ditampilkan sebagai baris "Pemeriksaan silang kas" di laporan, ekspor, dan layar.
+* **PDF** (`ReportPdf.tsx`): satu templat untuk semua laporan dari `ReportTable` yang sama dengan CSV/Excel (angka identik); potret ≤ 4 kolom, lanskap bila lebih lebar; judul kolom, penafian, dan nomor halaman berulang di setiap halaman; simbol di luar WinAnsi diganti/dibuang (`pdfSafe`).
+  PDF juga tersedia untuk laporan pajak dan laporan rekonsiliasi bank.
+* Penafian laporan: basis kas, struktur SAK EMKM tetapi **bukan** laporan keuangan resmi lengkap (belum ada Catatan atas Laporan Keuangan) dan bukan SPT.
 
 ## 11. Risiko teknis & mitigasi
 
@@ -296,7 +358,11 @@ bersih/rusak-terdeteksi (`ledger-round3-fuzz`); D — kesalahan pencatatan lazim
 | Isi diubah setelah diajukan/diperiksa | Isi SUBMITTED dikunci (aplikasi + trigger) dan persetujuan menghitung ulang & mensyaratkan hasil identik | Tes service + SQL langsung ditolak |
 | Saldo kas salah / entri diubah diam-diam | Append-only + pembalikan, saldo dihitung dari ledger (bukan cache), `db:reconcile` menghitung ulang saldo di SQL murni | Tes 3 putaran (fuzz berbasis model, SQL langsung, konkurensi) |
 | Buku besar tak seimbang / berselisih dari kas | Jurnal kas diturunkan (bukan disalin); jurnal manual dijaga trigger tertunda (Σ debit = Σ kredit); neraca saldo & neraca menampilkan status seimbang; `db:reconcile` memeriksa jurnal | Tes 4 putaran tahap 2 (fuzz dengan oracle SQL), uji mutasi |
-| Transaksi bertanggal mundur mengubah laporan periode yang sudah dibaca | Penutupan buku (service + trigger); koreksi = pembalikan bertanggal hari ini | `ledger-round5-period-lock`, E2E |
+| Transaksi bertanggal mundur mengubah laporan periode yang sudah dibaca | Tutup buku bulanan berurutan (service + trigger, kunci dipelihara dari tabel periode); koreksi = pembalikan bertanggal hari ini | `ledger-round5-period-lock`, `period-round1..3`, E2E |
+| Angka periode tertutup berubah diam-diam (SQL langsung / trigger dimatikan) | Foto + sha256 neraca saldo per periode; pemeriksaan WAJIB "foto periode lama masih cocok" sebelum menutup bulan berikutnya; `db:reconcile` menghitung ulang total aset di SQL murni | `period-round2-adversarial` (tamper), uji mutasi |
+| PPN/PPh salah pisah atau pembulatan menggantung | PPN dibekukan per pembayaran (kumulatif proporsional, Σ = PPN invoice), pembalikan = cermin (trigger), `db:reconcile` memeriksa Σ PPN ≤ PPN invoice | `tax-round1..3`, fuzz oracle |
+| Saldo buku ≠ rekening koran tak terdeteksi | Rekonsiliasi bank: selisih harus 0 sebelum final, final tak dapat diubah, pencocokan unik per transaksi; periode tertutup memperingatkan bila belum final | `bank-round1..3`, `period-round1` |
+| Laporan di layar ≠ Excel ≠ PDF | Satu `ReportTable` untuk ketiganya; kolom pembanding diuji identik dengan laporan biasa; kecocokan kas arus kas ↔ neraca | `report-round1..2` |
 | Dokumen draft disalahgunakan sebagai invoice resmi | Watermark DRAFT, tanpa nomor/cap/tanda tangan di sumber data, peringatan di kaki halaman | Tes PDF (teks + hitung gambar) |
 | Invoice lama berubah diam-diam | Snapshot + trigger DB + service menolak | Tes SQL langsung ditolak |
 | Salah hitung / pembulatan | BigInt, urutan eksplisit, satu pembulatan, CHECK identitas total | Tes unit kalkulasi/terbilang + CHECK DB |
@@ -309,5 +375,5 @@ bersih/rusak-terdeteksi (`ledger-round3-fuzz`); D — kesalahan pencatatan lazim
 
 ## 12. Status implementasi terhadap brief
 
-Seluruh bagian 3–19 brief **terimplementasi dan teruji**. Hal yang sengaja belum ada / perlu keputusan dicatat di
-[BUSINESS-DECISIONS.md](BUSINESS-DECISIONS.md) (mis. token API untuk integrasi server-to-server, MFA, kalender libur, PPh pemotongan oleh pelanggan).
+Seluruh bagian 3–19 brief **terimplementasi dan teruji**, ditambah modul keuangan basis kas (kas & bank, buku besar, laporan, pajak, rekonsiliasi bank, tutup buku bulanan). Hal yang sengaja belum ada / perlu keputusan dicatat di
+[BUSINESS-DECISIONS.md](BUSINESS-DECISIONS.md) (mis. token API untuk integrasi server-to-server, MFA, kalender libur, Catatan atas Laporan Keuangan, maker-checker jurnal manual, akrual).

@@ -9,6 +9,7 @@ import { assertCan, type Actor } from "../actor";
 import { writeAudit } from "../audit";
 import { dateToIso, isoToDate } from "../json";
 import { createEntry } from "./cash-entries";
+import type { ReportTable } from "../export";
 import {
   CSV_MAX_CHARS, detectMapping, parseCsv, parseStatementLines, type CsvMapping, type ParsedLine,
 } from "@/lib/accounting/bank-csv";
@@ -16,7 +17,7 @@ import { itemKey, reconSummary, suggestMatches, type BookItem, type ReconSummary
 import { CASH_AMOUNT_MAX } from "@/lib/accounting/limits";
 import { formatRupiah } from "@/lib/finance/money";
 import { isValidIsoDate } from "@/lib/finance/due-date";
-import { todayIso } from "@/lib/format";
+import { formatDateLong, todayIso } from "@/lib/format";
 import { isoDate, optionalText, requiredText, uuid } from "@/lib/validation/common";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -265,6 +266,34 @@ async function lockStatement(tx: Tx, id: string): Promise<{ status: "DRAFT" | "F
 const requireDraft = (st: { status: string }) => { if (st.status !== "DRAFT") throw Errors.conflict("Rekening koran sudah difinalisasi. Buka kembali (alasan wajib) untuk mengubah pencocokan."); };
 
 // ───────────────────────────── Pencocokan ─────────────────────────────
+// ───────────────────────────── Laporan rekonsiliasi (CSV / Excel / PDF) ─────────────────────────────
+export async function runReconciliationReport(actor: Actor, id: string): Promise<ReportTable> {
+  const ws = await getStatementWorkspace(actor, id);
+  const st = ws.statement, sm = ws.summary;
+  type Row = Record<string, string | number | null>;
+  const head = (item: string): Row => ({ item, amount: null, kind: "head" });
+  const line = (item: string, amount: number): Row => ({ item, amount, kind: item.startsWith("   ") ? "line" : "total" });
+  const rows: Row[] = [
+    head("Ringkasan rekonsiliasi"),
+    line("Saldo akhir menurut rekening koran", sm.closing),
+    line("   Transaksi buku beredar (belum tercermin di bank), neto", sm.outstandingNet),
+    line("Saldo bank disesuaikan", sm.adjustedBank),
+    line("Saldo buku akun pada akhir periode", sm.bookBalance),
+    line(sm.difference === 0 ? "Selisih (harus 0) - cocok" : "Selisih (harus 0) - BELUM COCOK", sm.difference),
+    head("Transaksi buku beredar"),
+    ...ws.outstanding.filter((i) => i.matchedIn === null).map((i) => line(`   ${i.date} ${i.label}`, i.amount)),
+    head("Mutasi rekening koran"),
+    ...ws.lines.map((l) => line(`   ${l.txDate} ${l.description}${l.matches.length ? ` -> ${l.matches.map((m) => m.label).join("; ")}` : " -> BELUM COCOK"}`, l.amount)),
+    { item: st.status === "FINALIZED" ? `Status: FINAL oleh ${st.finalizedByName ?? "-"}` : "Status: DRAFT (belum difinalisasi)", amount: null, kind: "note" },
+  ];
+  return {
+    type: "bank-reconciliation", title: `Laporan Rekonsiliasi Bank - ${st.accountName}`, description: "Rekening koran dicocokkan dengan transaksi buku.",
+    disclaimer: "Rekonsiliasi bank: selisih = saldo akhir bank + transaksi buku yang belum cocok - saldo buku. Laporan manajemen, bukan dokumen resmi bank.",
+    periodLabel: `${formatDateLong(st.periodStart)} – ${formatDateLong(st.periodEnd)}`, generatedAt: new Date().toISOString(),
+    columns: [{ key: "item", label: "Uraian", type: "text", width: 70 }, { key: "amount", label: "Jumlah (Rp)", type: "money", width: 22 }], rows, totals: null,
+  };
+}
+
 export const autoMatchSchema = z.object({ windowDays: z.number().int().min(0).max(14).default(5) });
 export async function autoMatchStatement(actor: Actor, id: string, raw: unknown = {}): Promise<{ matched: number; unmatchedLines: number }> {
   assertCan(actor, "bank:reconcile");

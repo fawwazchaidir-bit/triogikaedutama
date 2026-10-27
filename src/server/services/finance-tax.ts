@@ -11,7 +11,7 @@ import type { ReportTable } from "../export";
 import { loadGl } from "./finance-ledger";
 import { createEntry } from "./cash-entries";
 import { createJournalTx, getJournalDto, journalInputSchema } from "./journals";
-import { assertBooksOpen, getBooksLock } from "./books-lock";
+import { getBooksLock } from "./books-lock";
 import { glIncome, type GlLine } from "@/lib/accounting/ledger";
 import {
   CODE_PPH_BADAN_EXPENSE, CODE_PPH_BADAN_PAYABLE, CODE_PPH_CREDIT, CODE_VAT_OUT,
@@ -98,7 +98,6 @@ export async function saveTaxYearInput(actor: Actor, raw: unknown): Promise<TaxY
 
 // ───────────────────────────── Util buku besar ─────────────────────────────
 const inRange = (l: GlLine, from: string, to: string) => l.date >= from && l.date <= to;
-const monthOf = (d: string) => d.slice(0, 7);
 const lastDay = (ym: string) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).toISOString().slice(0, 10);
 function months(from: string, to: string): string[] {
   const out: string[] = [];

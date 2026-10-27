@@ -40,17 +40,22 @@ export default async function ClosingPage() {
         {periods.length === 0 ? <EmptyState title="Belum ada periode" description="Tambahkan akun kas/bank beserta saldo awal di Pengaturan → Keuangan; periode dimulai dari bulan saldo awal paling awal." /> : (
           <TableWrap>
             <Table>
-              <thead><tr><Th>Periode</Th><Th>Status</Th><Th align="right">Total aset</Th><Th align="right">Laba sebelum pajak</Th><Th>Penutupan</Th><Th>Foto</Th><Th>{""}</Th></tr></thead>
+              <thead><tr><Th>Periode</Th><Th>Status</Th><Th align="right">Total aset</Th><Th align="right">Laba sebelum pajak</Th><Th>Penutupan</Th><Th align="right">Aksi</Th></tr></thead>
               <tbody>
                 {periods.map((p) => {
                   const s = STATE[p.state];
                   return (
                     <tr key={p.key} data-testid="period-row" data-period={p.key} data-state={p.state}>
                       <Td className="font-medium">{p.label}</Td>
-                      <Td><Badge tone={s.tone}>{s.label}</Badge></Td>
+                      <Td>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge tone={s.tone}>{s.label}</Badge>
+                          {p.verified !== null && (p.verified ? <Badge tone="green">Foto cocok</Badge> : <Badge tone="red">Foto berubah!</Badge>)}
+                        </div>
+                      </Td>
                       <Td align="right">{p.snapshot ? R(p.snapshot.assets) : "—"}</Td>
                       <Td align="right">{p.snapshot ? R(p.snapshot.profitBeforeTax) : "—"}</Td>
-                      <Td className="max-w-80 text-xs text-ink-soft">
+                      <Td className="max-w-64 text-xs text-ink-soft">
                         {p.state === "CLOSED" && <>
                           <p>{p.closedByName ?? "—"} · {p.closedAt ? formatDateShort(p.closedAt.slice(0, 10)) : "—"}</p>
                           {p.note && <p className="text-muted">{p.note}</p>}
@@ -58,7 +63,6 @@ export default async function ClosingPage() {
                         </>}
                         {p.state === "REOPENED" && <p>Dibuka kembali{p.reopenedAt ? ` ${formatDateShort(p.reopenedAt.slice(0, 10))}` : ""}: {p.reopenReason}</p>}
                       </Td>
-                      <Td>{p.verified === null ? "—" : p.verified ? <Badge tone="green">Cocok</Badge> : <Badge tone="red">Berubah!</Badge>}</Td>
                       <Td align="right">
                         <div className="flex justify-end gap-2">
                           {canLock && p.canClose && <ClosePeriodButton year={p.year} month={p.month} label={p.label} />}

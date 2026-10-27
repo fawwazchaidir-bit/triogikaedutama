@@ -539,7 +539,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await submit.click();
     await expect(page.getByText(/ditutup\.$/).first()).toBeVisible();
     await expect(first).toHaveAttribute("data-state", "CLOSED");
-    await expect(first.getByText("Cocok")).toBeVisible();
+    await expect(first.getByText("Foto cocok")).toBeVisible();
     await expect(page.getByText(/Buku ditutup sampai/)).toBeVisible();
     await expect(second.getByRole("button", { name: "Tutup bulan" })).toHaveCount(1); // kini giliran bulan berikutnya
     await expect(first.getByRole("button", { name: "Buka kembali" })).toBeVisible();
@@ -597,5 +597,54 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     await expect(first).toHaveAttribute("data-state", "REOPENED");
     await expect(page.getByText("Belum ada bulan yang ditutup.")).toBeVisible();
     expect((await entry(lastDay)).status()).toBe(201);
+  });
+
+  test("Laporan keuangan: pembanding periode, pemeriksaan silang kas, unduhan PDF (laporan, pajak, rekonsiliasi); staff ditolak", async ({ page, browser }) => {
+    await login(page, "finance");
+    await page.goto("/statements?type=income-statement");
+    await expect(page.getByRole("heading", { name: "Laporan Keuangan", exact: true, level: 1 })).toBeVisible();
+    // pembanding: periode sebelumnya → tabel 5 kolom
+    await page.locator('select[name="compare"]').selectOption("previous");
+    await page.getByRole("button", { name: "Terapkan" }).click();
+    const cmp = page.getByTestId("compare-table");
+    await expect(cmp).toBeVisible();
+    await expect(cmp.locator("thead th")).toHaveCount(5);
+    await expect(cmp.getByText("Jumlah pendapatan usaha")).toBeVisible();
+    await expect(page.getByText(/dibandingkan dengan/)).toBeVisible();
+    // tautan unduhan membawa filter yang sama + format PDF
+    const pdfLink = page.getByRole("link", { name: "PDF" });
+    await expect(pdfLink).toHaveAttribute("href", /\/api\/finance\/statements\/income-statement\?.*compare=previous.*format=pdf/);
+    const res = await page.request.get((await pdfLink.getAttribute("href"))!);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toBe("application/pdf");
+    expect((await res.body()).subarray(0, 5).toString()).toBe("%PDF-");
+
+    // neraca & arus kas: kas akhir = kas buku besar
+    for (const type of ["balance-sheet", "cash-flow"]) {
+      await page.goto(`/statements?type=${type}`);
+      await expect(page.getByTestId("cash-tie-out")).toContainText("Kas akhir menurut arus kas = kas pada neraca");
+      const pdf = await page.request.get(`/api/finance/statements/${type}?format=pdf`);
+      expect(pdf.status(), type).toBe(200);
+      expect((await pdf.body()).subarray(0, 5).toString(), type).toBe("%PDF-");
+    }
+    // neraca dengan pembanding tahun lalu; masukan pembanding tak sah ditolak
+    expect((await page.request.get("/api/finance/statements/balance-sheet?compare=year&format=csv")).status()).toBe(200);
+    expect((await page.request.get("/api/finance/statements/income-statement?compare=bulan-lalu")).status()).toBe(422);
+
+    // pajak & rekonsiliasi: PDF
+    expect((await page.request.get("/api/finance/taxes/vat?format=pdf")).headers()["content-type"]).toBe("application/pdf");
+    const list = (await (await page.request.get("/api/finance/bank/statements")).json()).data as { id: string }[];
+    if (list.length) {
+      const rec = await page.request.get(`/api/finance/bank/statements/${list[0]!.id}?format=pdf`);
+      expect(rec.status()).toBe(200);
+      expect((await rec.body()).subarray(0, 5).toString()).toBe("%PDF-");
+    }
+
+    // staff: tidak dapat mengunduh laporan apa pun
+    const sctx = await browser.newContext();
+    const sp = await sctx.newPage();
+    await login(sp, "staff");
+    for (const u of ["/api/finance/statements/income-statement?format=pdf", "/api/finance/taxes/vat?format=pdf", "/api/finance/periods"]) expect((await sp.request.get(u)).status(), u).toBe(403);
+    await sctx.close();
   });
 });

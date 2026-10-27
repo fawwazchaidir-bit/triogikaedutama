@@ -169,7 +169,7 @@ export async function listPeriods(actor: Actor): Promise<PeriodList> {
         acknowledged: (r?.acknowledged as PeriodDto["acknowledged"] | null) ?? [],
         reopenReason: r?.reopenReason ?? null, reopenedAt: r?.reopenedAt?.toISOString() ?? null,
         verified: closed && snap && verify ? hashTb(end, verify(end).rows.map((x) => ({ code: x.code, net: x.net }))) === r!.snapshotHash : null,
-        snapshot: snap ? { totalDebit: snap.totalDebit, assets: snap.balanceSheet.assets, liabilities: snap.balanceSheet.liabilities, equity: snap.balanceSheet.equity, revenue: snap.month.revenue, profitBeforeTax: snap.month.profitBeforeTax } : null,
+        snapshot: closed && snap ? { totalDebit: snap.totalDebit, assets: snap.balanceSheet.assets, liabilities: snap.balanceSheet.liabilities, equity: snap.balanceSheet.equity, revenue: snap.month.revenue, profitBeforeTax: snap.month.profitBeforeTax } : null,
         canClose: !closed && periodHasEnded(p.year, p.month, today) && prevOk,
         canReopen: closed && lastClosed === periodIndex(p.year, p.month),
       });

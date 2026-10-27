@@ -9,6 +9,7 @@ import { Card, CardHeader, Notice, PageHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableWrap, Td, Th } from "@/components/ui/table";
 import { LineActions, StatementActions, StatusBadge } from "@/components/bank-forms";
+import { ExportLinks } from "@/components/export-links";
 import { can } from "@/lib/permissions";
 import { formatRupiah } from "@/lib/finance/money";
 import { formatDateShort } from "@/lib/format";
@@ -30,7 +31,7 @@ export default async function StatementPage({ params }: { params: Promise<{ id: 
   return (
     <div>
       <PageHeader title={`Rekonsiliasi ${s.accountName}`} description={`${formatDateShort(s.periodStart)} – ${formatDateShort(s.periodEnd)}${s.label ? ` · ${s.label}` : ""}`}
-        actions={<><Link href="/reconciliation" className="inline-flex h-10 items-center rounded-md border border-line bg-white px-3 text-sm hover:bg-canvas">Kembali</Link><StatusBadge status={s.status} /></>} />
+        actions={<><ExportLinks base={`/api/finance/bank/statements/${s.id}`} /><Link href="/reconciliation" className="inline-flex h-10 items-center rounded-md border border-line bg-white px-3 text-sm hover:bg-canvas">Kembali</Link><StatusBadge status={s.status} /></>} />
       {s.reopenReason && draft && <div className="mb-3"><Notice tone="info">Dibuka kembali: {s.reopenReason}</Notice></div>}
       <Card className="mb-4">
         <dl className="grid gap-3 px-5 py-4 text-sm sm:grid-cols-2 lg:grid-cols-5">

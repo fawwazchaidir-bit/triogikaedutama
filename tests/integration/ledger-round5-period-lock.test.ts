@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/db";
-import { resetDb, seedFixtures, demiChefInput, makeProof, type Fixtures } from "../helpers/db";
+import { resetDb, seedFixtures, demiChefInput, type Fixtures } from "../helpers/db";
 import { createDraft, issueInvoice } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { createCashAccount, listCashAccounts, updateCashAccount } from "@/server/services/cash-accounts";

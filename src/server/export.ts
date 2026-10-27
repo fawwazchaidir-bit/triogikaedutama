@@ -17,6 +17,8 @@ export interface ReportTable {
   rows: Record<string, string | number | null>[];
   /** Baris total (kunci = key kolom). */
   totals: Record<string, string | number | null> | null;
+  /** Keterangan periode pembanding (hanya bila laporan dibandingkan). */
+  compareLabel?: string;
 }
 
 /**
@@ -70,7 +72,7 @@ export async function toXlsx(t: ReportTable): Promise<Buffer> {
         const v = isTotal && i === 0 && r[c.key] == null ? "TOTAL" : (r[c.key] ?? null);
         if (v === null) return null;
         if (c.type === "text") return typeof v === "string" ? v : String(v); // string biasa → tidak pernah dievaluasi sebagai formula
-        if (c.type === "date" && typeof v === "string") return new Date(`${v.slice(0, 10)}T00:00:00Z`);
+        if (c.type === "date" && typeof v === "string") return /^\d{4}-\d{2}-\d{2}/.test(v) ? new Date(`${v.slice(0, 10)}T00:00:00Z`) : v; // "TOTAL" di kolom tanggal tetap teks
         if (c.type === "datetime" && typeof v === "string") return new Date(v);
         return v;
       }),
@@ -93,7 +95,7 @@ export async function toXlsx(t: ReportTable): Promise<Buffer> {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-export function exportFilename(type: string, ext: "csv" | "xlsx", periodLabel: string): string {
+export function exportFilename(type: string, ext: "csv" | "xlsx" | "pdf", periodLabel: string): string {
   const p = periodLabel.replace(/[^0-9A-Za-z]+/g, "_").replace(/^_+|_+$/g, "");
   return `Laporan_${type}_${p}.${ext}`;
 }

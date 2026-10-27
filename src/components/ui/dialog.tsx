@@ -22,13 +22,14 @@ export function Dialog({
 
   const widths = { sm: "max-w-md", md: "max-w-xl", lg: "max-w-3xl", xl: "max-w-5xl" } as const;
 
+  // `text-left`: dialog sering dipicu dari sel tabel rata-kanan dan tidak boleh mewarisi perataannya.
   return (
     <dialog
       ref={ref}
       onClose={onClose}
       onCancel={(e) => { e.preventDefault(); onClose(); }}
       onClick={(e) => { if (e.target === ref.current) onClose(); }}
-      className={cn("w-[calc(100%-2rem)] rounded-xl border border-line bg-surface p-0 shadow-2xl", widths[size])}
+      className={cn("w-[calc(100%-2rem)] rounded-xl border border-line bg-surface p-0 text-left shadow-2xl", widths[size])}
       aria-labelledby="dlg-title"
     >
       {open && (

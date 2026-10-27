@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { z } from "zod";
-import { Download } from "lucide-react";
 import { requirePagePermission } from "@/server/auth/current";
-import { STATEMENT_DISCLAIMER, getCashFlow, getFinanceWarnings, getIncomeStatement } from "@/server/services/finance-statements";
+import { COMPARE_MODES, STATEMENT_DISCLAIMER, getCashFlow, getCashTieOut, getFinanceWarnings, getIncomeStatement, runStatement, type CashTieOut } from "@/server/services/finance-statements";
 import { getBalanceSheet, getGeneralLedger, getGlIncomeStatement, getTrialBalance } from "@/server/services/finance-ledger";
 import { listCoaAccounts } from "@/server/services/finance-coa";
 import { env } from "@/server/env";
 import { Card, CardHeader, Notice, PageHeader } from "@/components/ui/card";
 import { FilterBar, FilterField, filterInput } from "@/components/filter-bar";
+import { ExportLinks } from "@/components/export-links";
 import { buildQuery } from "@/lib/invoice-can";
 import { formatRupiah } from "@/lib/finance/money";
 import { formatDateLong, formatDateShort, todayIso } from "@/lib/format";
@@ -17,13 +17,14 @@ import { AppError } from "@/server/errors";
 import { cn } from "@/lib/cn";
 import type { GlLineItem } from "@/lib/accounting/ledger";
 import type { Line } from "@/lib/accounting/statements";
+import type { ReportTable } from "@/server/export";
 
 export const metadata: Metadata = { title: "Laporan Keuangan" };
 export const dynamic = "force-dynamic";
 
 const TYPES = ["income-statement", "cash-flow", "balance-sheet", "trial-balance", "general-ledger"] as const;
 const LABEL: Record<(typeof TYPES)[number], string> = { "income-statement": "Laba Rugi", "cash-flow": "Arus Kas", "balance-sheet": "Neraca", "trial-balance": "Neraca Saldo", "general-ledger": "Buku Besar" };
-const schema = z.object({ type: z.enum(TYPES).default("income-statement"), from: isoDate.optional(), to: isoDate.optional(), accountId: z.string().uuid().optional() });
+const schema = z.object({ type: z.enum(TYPES).default("income-statement"), from: isoDate.optional(), to: isoDate.optional(), accountId: z.string().uuid().optional(), compare: z.enum(COMPARE_MODES).default("none") });
 const R = (n: number) => formatRupiah(n, "PLAIN");
 
 function Row({ label, value, strong, indent, rule }: { label: string; value?: number; strong?: boolean; indent?: boolean; rule?: boolean }) {
@@ -36,43 +37,93 @@ function Row({ label, value, strong, indent, rule }: { label: string; value?: nu
 }
 const Lines = ({ lines }: { lines: (Line | GlLineItem)[] }) => <>{lines.map((l) => <Row key={`${l.code}${l.name}`} indent label={`${l.code ? `${l.code} ` : ""}${l.name}`} value={l.amount} />)}</>;
 
+const N = (n: number) => new Intl.NumberFormat("id-ID").format(n);
+const pct = (v: unknown) => (typeof v === "number" ? `${v > 0 ? "+" : ""}${v.toFixed(1).replace(".", ",")}%` : "—");
+
+/** Tabel pembanding: kolom periode ini, pembanding, selisih, persen — dari `runStatement` yang sama dengan ekspor. */
+function CompareTable({ table }: { table: ReportTable }) {
+  return (
+    <div className="overflow-x-auto px-5 py-4">
+      <p className="mb-2 text-xs text-muted">Jumlah dalam Rupiah. Periode ini: {table.periodLabel} · Pembanding: {table.compareLabel}</p>
+      <table className="w-full min-w-[44rem] text-sm" data-testid="compare-table">
+        <thead>
+          <tr className="text-left text-xs uppercase tracking-wide text-muted">
+            <th className="py-1 pr-3">Uraian</th><th className="py-1 pr-3 text-right">Periode ini</th><th className="py-1 pr-3 text-right">Pembanding</th><th className="py-1 pr-3 text-right">Selisih</th><th className="py-1 text-right">%</th>
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((r, i) => {
+            const kind = r.kind as string;
+            if (kind === "head") return <tr key={i}><td colSpan={5} className="pt-3 pb-1 font-semibold">{String(r.item)}</td></tr>;
+            return (
+              <tr key={i} className={cn("border-t border-line/50", kind === "total" && "border-ink/30 font-semibold", kind === "note" && "text-xs italic text-muted")}>
+                <td className={cn("py-1.5 pr-3", kind === "line" && "pl-5 text-ink-soft")}>{String(r.item).trim()}</td>
+                <td className="tabular whitespace-nowrap py-1.5 pr-3 text-right">{typeof r.amount === "number" ? N(r.amount) : ""}</td>
+                <td className="tabular whitespace-nowrap py-1.5 pr-3 text-right">{typeof r.prev === "number" ? N(r.prev) : ""}</td>
+                <td className={cn("tabular whitespace-nowrap py-1.5 pr-3 text-right", typeof r.change === "number" && r.change < 0 && "text-brand-700")}>{typeof r.change === "number" ? N(r.change) : ""}</td>
+                <td className="tabular whitespace-nowrap py-1.5 text-right text-muted">{typeof r.amount === "number" ? pct(r.pct) : ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TieOut({ t }: { t: CashTieOut }) {
+  return (
+    <p className={cn("border-t border-line px-5 py-3 text-sm", t.ok ? "text-emerald-700" : "font-semibold text-brand-700")} role="status" data-testid="cash-tie-out">
+      {t.ok ? `Kas akhir menurut arus kas = kas pada neraca ✓ (${R(t.cashFlowEnding)})` : `KAS TIDAK COCOK — arus kas ${R(t.cashFlowEnding)} vs buku besar ${R(t.ledgerCash)} (selisih ${R(t.difference)}). Hubungi Administrator.`}
+    </p>
+  );
+}
+
 export default async function StatementsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const user = await requirePagePermission("finance:view");
   const sp = await searchParams;
-  const f = schema.safeParse(Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]).filter(([, v]) => v))).data ?? { type: "income-statement" as const };
+  const f = schema.safeParse(Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]).filter(([, v]) => v))).data ?? schema.parse({});
   const today = todayIso(env().APP_TIMEZONE);
   const to = f.to ?? today;
   const from = f.from ?? `${to.slice(0, 4)}-01-01`;
   const q = { from, to };
   const asOfOnly = f.type === "balance-sheet" || f.type === "trial-balance";
   let error: string | null = null;
-  let cf = null, pl = null, bs = null, tb = null, gl = null, vatNote = 0, whNote = 0;
+  let cf = null, pl = null, bs = null, tb = null, gl = null, vatNote = 0, whNote = 0, cmp: ReportTable | null = null, tie: CashTieOut | null = null;
+  const comparable = f.type === "income-statement" || f.type === "balance-sheet" || f.type === "cash-flow";
   const accounts = f.type === "general-ledger" ? await listCoaAccounts(user) : [];
   try {
-    if (f.type === "cash-flow") cf = await getCashFlow(user, q);
+    if (f.type === "cash-flow" || f.type === "balance-sheet") tie = await getCashTieOut(user, q);
+    if (comparable && f.compare !== "none") cmp = await runStatement(user, f.type, { ...q, compare: f.compare }); // sama dengan tabel ekspor
+    else if (f.type === "cash-flow") cf = await getCashFlow(user, q);
     else if (f.type === "income-statement") { pl = await getGlIncomeStatement(user, q); const s1 = await getIncomeStatement(user, q); vatNote = s1.vatCollected; whNote = s1.withheldByCustomers; }
     else if (f.type === "balance-sheet") bs = await getBalanceSheet(user, { to });
     else if (f.type === "trial-balance") tb = await getTrialBalance(user, { to });
     else if (f.accountId) gl = await getGeneralLedger(user, { accountId: f.accountId, ...q });
   } catch (e) { if (e instanceof AppError) error = e.message; else throw e; }
   const warnings = await getFinanceWarnings(user);
-  const exp = (format: "csv" | "xlsx") => `/api/finance/statements/${f.type}${buildQuery({ ...q, accountId: f.accountId, format })}`;
   const tab = (id: (typeof TYPES)[number]) => (
-    <Link key={id} href={`/statements${buildQuery({ type: id, ...q, accountId: f.accountId })}`} aria-current={f.type === id ? "page" : undefined}
+    <Link key={id} href={`/statements${buildQuery({ type: id, ...q, accountId: f.accountId, compare: f.compare === "none" ? undefined : f.compare })}`} aria-current={f.type === id ? "page" : undefined}
       className={cn("rounded-md px-3 py-1.5 text-sm font-medium", f.type === id ? "bg-ink text-white" : "text-ink-soft hover:bg-black/5")}>{LABEL[id]}</Link>
   );
   return (
     <div>
       <PageHeader title="Laporan Keuangan" description="Basis kas dari buku besar: pendapatan diakui saat uang diterima, beban saat dibayar. Hanya entri yang sudah berlaku (disetujui) yang dihitung."
-        actions={!error && (f.type !== "general-ledger" || f.accountId) && <>
-          <a href={exp("csv")} className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium shadow-sm hover:bg-canvas"><Download className="size-4" />CSV</a>
-          <a href={exp("xlsx")} className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium shadow-sm hover:bg-canvas"><Download className="size-4" />Excel</a>
-        </>} />
+        actions={!error && (f.type !== "general-ledger" || f.accountId) && <ExportLinks base={`/api/finance/statements/${f.type}`} params={{ ...q, accountId: f.accountId, compare: comparable && f.compare !== "none" ? f.compare : undefined }} />} />
       <nav aria-label="Jenis laporan" className="mb-4 flex flex-wrap gap-2 border-b border-line pb-3">{TYPES.map(tab)}</nav>
       <FilterBar action="/statements" resetHref={`/statements?type=${f.type}`}>
         <input type="hidden" name="type" value={f.type} />
         {!asOfOnly && <FilterField label="Dari tanggal"><input type="date" name="from" defaultValue={from} className={filterInput} /></FilterField>}
         <FilterField label={asOfOnly ? "Per tanggal" : "Sampai tanggal"}><input type="date" name="to" defaultValue={to} max={today} className={filterInput} /></FilterField>
+        {comparable && (
+          <FilterField label="Pembanding">
+            <select name="compare" defaultValue={f.compare} className={filterInput}>
+              <option value="none">Tanpa pembanding</option>
+              <option value="previous">{f.type === "balance-sheet" ? "Akhir periode sebelumnya" : "Periode sebelumnya"}</option>
+              <option value="year">Tahun lalu</option>
+            </select>
+          </FilterField>
+        )}
         {f.type === "general-ledger" && (
           <FilterField label="Akun">
             <select name="accountId" defaultValue={f.accountId ?? ""} className={cn(filterInput, "min-w-64")}>
@@ -85,6 +136,14 @@ export default async function StatementsPage({ searchParams }: { searchParams: P
       {error && <Notice tone="danger">{error}</Notice>}
       {warnings.unallocatedPayments > 0 && <div className="mb-3"><Notice tone="warn">{warnings.unallocatedPayments} pembayaran invoice belum dialokasikan ke akun kas/bank — dihitung sebagai pendapatan dan tampil di neraca sebagai <em>Penerimaan Invoice Belum Dialokasikan</em> (1-1450), bukan saldo kas.</Notice></div>}
       {warnings.pendingExpenses > 0 && <div className="mb-3"><Notice tone="info">{warnings.pendingExpenses} pengeluaran masih menunggu persetujuan dan belum dihitung.</Notice></div>}
+
+      {cmp && (
+        <Card>
+          <CardHeader title={cmp.title} description={`${cmp.periodLabel} — dibandingkan dengan ${cmp.compareLabel}`} />
+          <CompareTable table={cmp} />
+          {tie && <TieOut t={tie} />}
+        </Card>
+      )}
 
       {pl && (
         <Card>
@@ -144,6 +203,7 @@ export default async function StatementsPage({ searchParams }: { searchParams: P
           <p className={cn("border-t border-line px-5 py-3 text-sm", bs.balanced ? "text-emerald-700" : "font-semibold text-brand-700")} role="status">
             {bs.balanced ? "Neraca seimbang ✓ (aset = liabilitas + ekuitas)" : `NERACA TIDAK SEIMBANG — selisih ${R(bs.difference)}. Hubungi Administrator.`}
           </p>
+          {tie && <TieOut t={tie} />}
         </Card>
       )}
 
@@ -222,6 +282,7 @@ export default async function StatementsPage({ searchParams }: { searchParams: P
               </table>
             </div>
           </div>
+          {tie && <TieOut t={tie} />}
           {cf.notInBalances !== 0 && <p className="border-t border-line px-5 py-3 text-xs text-muted">Catatan: {R(cf.notInBalances)} penerimaan invoice dalam periode tidak masuk saldo akun mana pun (belum dialokasikan atau mendahului tanggal saldo awal akun).</p>}
         </Card>
       )}

@@ -41,7 +41,6 @@ const allCov: Record<string, number> = {};
 const hit = (k: string) => { cov[k] = (cov[k] ?? 0) + 1; allCov[k] = (allCov[k] ?? 0) + 1; };
 
 const NON_CASH_ELIGIBLE = ["1-1300", "1-1400", "1-2100", "1-2200", "1-2300", "1-2900", "2-1100", "2-1200", "2-2100", "3-1100", "3-1200", "3-2100", "4-2100", "4-2200", "5-1100", "5-1300", "6-1100", "6-1600", "6-2000", "7-1100"];
-const BS_ELIGIBLE = ["1-1300", "1-1400", "1-2100", "1-2200", "1-2300", "1-2900", "2-1100", "2-1200", "2-2100", "3-1100", "3-1200", "3-2100"];
 
 async function fuzz(seed: number, ops: number): Promise<{ posts: Post[] }> {
   for (const k of Object.keys(cov)) delete cov[k];
