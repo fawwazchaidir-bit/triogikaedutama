@@ -145,22 +145,25 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  sessions          Session[]
-  customers         Customer[]     @relation("CustomerCreatedBy")
-  invoicesCreated   Invoice[]      @relation("InvoiceCreatedBy")
-  invoicesIssued    Invoice[]      @relation("InvoiceIssuedBy")
-  invoicesCancel    Invoice[]      @relation("InvoiceCancelledBy")
-  invoicesSubmitted Invoice[]      @relation("InvoiceSubmittedBy")
-  invoicesRejected  Invoice[]      @relation("InvoiceRejectedBy")
-  payments          Payment[]
-  files             StoredFile[]
-  entriesCreated    CashEntry[]    @relation("CashEntryCreatedBy")
-  entriesApproved   CashEntry[]    @relation("CashEntryApprovedBy")
-  entriesRejected   CashEntry[]    @relation("CashEntryRejectedBy")
-  transfersCreated  CashTransfer[] @relation("CashTransferCreatedBy")
-  taxYearInputs     TaxYearInput[]
-  journalsCreated   JournalEntry[] @relation("JournalCreatedBy")
-  auditLogs         AuditLog[]
+  sessions            Session[]
+  customers           Customer[]      @relation("CustomerCreatedBy")
+  invoicesCreated     Invoice[]       @relation("InvoiceCreatedBy")
+  invoicesIssued      Invoice[]       @relation("InvoiceIssuedBy")
+  invoicesCancel      Invoice[]       @relation("InvoiceCancelledBy")
+  invoicesSubmitted   Invoice[]       @relation("InvoiceSubmittedBy")
+  invoicesRejected    Invoice[]       @relation("InvoiceRejectedBy")
+  payments            Payment[]
+  files               StoredFile[]
+  entriesCreated      CashEntry[]     @relation("CashEntryCreatedBy")
+  entriesApproved     CashEntry[]     @relation("CashEntryApprovedBy")
+  entriesRejected     CashEntry[]     @relation("CashEntryRejectedBy")
+  transfersCreated    CashTransfer[]  @relation("CashTransferCreatedBy")
+  taxYearInputs       TaxYearInput[]
+  statementsCreated   BankStatement[] @relation("BankStatementCreatedBy")
+  statementsFinalized BankStatement[] @relation("BankStatementFinalizedBy")
+  bankMatchesMade     BankMatch[]
+  journalsCreated     JournalEntry[]  @relation("JournalCreatedBy")
+  auditLogs           AuditLog[]
 
   @@map("users")
 }
@@ -328,6 +331,96 @@ model CompanySettings {
   updatedAt DateTime @updatedAt
 
   @@map("company_settings")
+}
+
+// ───────────────────────────── Rekonsiliasi bank ─────────────────────────────
+
+enum BankStatementStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum BankMatchSource {
+  PAYMENT
+  CASH_ENTRY
+  TRANSFER
+}
+
+enum BankMatchMethod {
+  AUTO
+  MANUAL
+}
+
+/// Rekening koran satu akun kas/bank untuk satu periode. DRAFT = sedang dicocokkan; FINALIZED = tidak dapat diubah (hanya dapat dibuka kembali
+/// bila belum ada rekening koran berikutnya yang difinalisasi).
+model BankStatement {
+  id             String              @id @default(uuid()) @db.Uuid
+  cashAccountId  String              @db.Uuid
+  periodStart    DateTime            @db.Date
+  periodEnd      DateTime            @db.Date
+  /// Saldo awal & akhir menurut bank (Rupiah bulat).
+  openingBalance BigInt
+  closingBalance BigInt
+  label          String?
+  note           String?
+  status         BankStatementStatus @default(DRAFT)
+  createdById    String              @db.Uuid
+  createdAt      DateTime            @default(now())
+  finalizedAt    DateTime?
+  finalizedById  String?             @db.Uuid
+  reopenReason   String?
+
+  cashAccount CashAccount         @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  createdBy   User                @relation("BankStatementCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  finalizedBy User?               @relation("BankStatementFinalizedBy", fields: [finalizedById], references: [id], onDelete: Restrict)
+  lines       BankStatementLine[]
+  matches     BankMatch[]
+
+  @@index([cashAccountId, periodEnd])
+  @@map("bank_statements")
+}
+
+/// Satu baris mutasi pada rekening koran. `amount` BERTANDA: positif = uang masuk (kredit di bank), negatif = uang keluar.
+model BankStatementLine {
+  id          String   @id @default(uuid()) @db.Uuid
+  statementId String   @db.Uuid
+  lineNo      Int
+  txDate      DateTime @db.Date
+  description String
+  reference   String?
+  amount      BigInt
+
+  statement BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  matches   BankMatch[]
+
+  @@unique([statementId, lineNo])
+  @@map("bank_statement_lines")
+}
+
+/// Pencocokan satu baris mutasi dengan satu transaksi buku (pembayaran invoice / entri kas / transfer). Satu transaksi hanya dapat dicocokkan SEKALI per akun.
+/// Satu baris dapat dicocokkan dengan beberapa transaksi (setoran gabungan); jumlahnya harus sama dengan nilai baris.
+model BankMatch {
+  id            String          @id @default(uuid()) @db.Uuid
+  statementId   String          @db.Uuid
+  lineId        String          @db.Uuid
+  cashAccountId String          @db.Uuid
+  sourceType    BankMatchSource
+  sourceId      String          @db.Uuid
+  /// Nilai BERTANDA transaksi buku pada akun ini (harus sama persis dengan data sumber).
+  amount        BigInt
+  method        BankMatchMethod
+  matchedById   String          @db.Uuid
+  createdAt     DateTime        @default(now())
+
+  statement   BankStatement     @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  line        BankStatementLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  cashAccount CashAccount       @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  matchedBy   User              @relation(fields: [matchedById], references: [id], onDelete: Restrict)
+
+  @@unique([cashAccountId, sourceType, sourceId])
+  @@index([lineId])
+  @@index([statementId])
+  @@map("bank_matches")
 }
 
 enum CorporateTaxRegime {
@@ -634,11 +727,13 @@ model CashAccount {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
-  coaAccount    CoaAccount     @relation(fields: [coaAccountId], references: [id], onDelete: Restrict)
+  coaAccount    CoaAccount      @relation(fields: [coaAccountId], references: [id], onDelete: Restrict)
   payments      Payment[]
   entries       CashEntry[]
-  transfersFrom CashTransfer[] @relation("TransferFrom")
-  transfersTo   CashTransfer[] @relation("TransferTo")
+  transfersFrom CashTransfer[]  @relation("TransferFrom")
+  transfersTo   CashTransfer[]  @relation("TransferTo")
+  statements    BankStatement[]
+  bankMatches   BankMatch[]
 
   @@map("cash_accounts")
 }

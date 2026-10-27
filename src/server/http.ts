@@ -39,11 +39,11 @@ export function assertSameOrigin(req: Request): void {
   throw Errors.forbidden("Permintaan ditolak (asal tidak diketahui).");
 }
 
-export async function readJson<T>(req: Request, schema: ZodType<T>): Promise<T> {
+export async function readJson<T>(req: Request, schema: ZodType<T>, maxBytes = MAX_BODY_BYTES): Promise<T> {
   const type = req.headers.get("content-type") ?? "";
   if (!type.toLowerCase().includes("application/json")) throw Errors.badRequest("Content-Type harus application/json.");
   const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw Errors.badRequest("Isi permintaan terlalu besar.");
+  if (text.length > maxBytes) throw Errors.badRequest("Isi permintaan terlalu besar.");
   let body: unknown;
   try { body = JSON.parse(text); } catch { throw Errors.badRequest("JSON tidak valid."); }
   return schema.parse(body);

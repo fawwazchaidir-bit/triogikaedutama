@@ -125,7 +125,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
 
     await login(page, "finance");
     await page.goto("/dashboard");
-    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pajak", "Pengaturan"]);
+    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Rekonsiliasi Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pajak", "Pengaturan"]);
     await page.goto("/expenses?status=PENDING");
     await expect(page.getByText(/pengeluaran menunggu persetujuan/)).toBeVisible();
 
@@ -486,6 +486,81 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     for (const u of ["/api/finance/taxes/overview", "/api/finance/taxes/vat", "/api/finance/taxes/payments", "/api/finance/taxes/profile"]) expect((await sp.request.get(u)).status(), u).toBe(403);
     expect((await sp.request.put("/api/finance/taxes/profile", { headers: ORIGIN, data: { isPkp: false, regime: "NONE", rateBps: null } })).status()).toBe(403);
     expect((await sp.request.post("/api/finance/taxes/corporate-journal", { headers: ORIGIN, data: { year: 2026 } })).status()).toBe(403);
+    await sctx.close();
+  });
+  test("Rekonsiliasi bank: impor CSV → cocok otomatis → catat biaya & bunga dari mutasi → selisih 0 → finalisasi → buka kembali; staff tidak punya akses", async ({ page, browser }) => {
+    await login(page, "finance");
+    const accts = (await (await page.request.get("/api/finance/cash-accounts/options")).json()).data as { id: string; name: string }[];
+    const bca = accts.find((a) => a.name === "Bank E2E BCA")!;
+    const cust = (await (await page.request.get("/api/customers/search?q=Bima")).json()).data[0].id as string;
+    const prod = (await (await page.request.get("/api/products/search?q=Demi")).json()).data[0].id as string;
+    const draft = await page.request.post("/api/invoices", { headers: ORIGIN, data: {
+      customerId: cust, invoiceDate: wib(), paymentMethod: "Transfer", paymentTermDays: 7, dueDateBasis: "CALENDAR_DAYS",
+      lines: [{ productId: prod, description: "Diklat E2E bank", quantity: 1, unit: "Pax", unitPrice: 2_000_000, discount: 0, taxConfigId: null }],
+    } });
+    const iid = (await draft.json()).data.id as string;
+    expect((await page.request.post(`/api/invoices/${iid}/issue`, { headers: ORIGIN, data: {} })).status()).toBe(200);
+    expect((await page.request.post("/api/payments", { headers: ORIGIN, data: { invoiceId: iid, paymentDate: wib(), amount: 100_000, method: "Transfer", reference: "BANK-E2E-REC", cashAccountId: bca.id } })).status()).toBe(201);
+
+    await page.goto("/reconciliation");
+    await expect(page.getByRole("heading", { name: "Rekonsiliasi Bank" })).toBeVisible();
+    await page.getByRole("button", { name: "Impor rekening koran" }).click();
+    const dlg = page.getByRole("dialog", { name: "Impor rekening koran" });
+    await dlg.getByLabel("Akun").selectOption({ label: "Bank E2E BCA" });
+    const [y, m, dd] = wib().split("-");
+    const day = `${dd}/${m}/${y}`;
+    await dlg.getByLabel("Akhir periode").fill(wib());
+    await dlg.getByLabel("Saldo awal menurut bank").fill("5000000");
+    await dlg.getByLabel("Saldo akhir menurut bank").fill("5110000");
+    await dlg.getByLabel(/atau tempel isi CSV/).fill(`Tanggal;Keterangan;Debet;Kredit\n${day};TRF MASUK BANK-E2E-REC;;100.000\n${day};BIAYA ADM;15.000;\n${day};BUNGA TABUNGAN;;25.000\n`);
+    await dlg.getByRole("button", { name: "Pratinjau" }).click();
+    await expect(dlg.getByText(/3 baris terbaca/)).toBeVisible();
+    await expect(dlg.getByText(/Saldo awal \+ mutasi = saldo akhir/)).toBeVisible();
+    await dlg.getByRole("button", { name: "Impor", exact: true }).click();
+    await expect(page.getByRole("heading", { name: /Rekonsiliasi Bank E2E BCA/ })).toBeVisible();
+    await expect(page.getByTestId("bank-line")).toHaveCount(3);
+
+    await page.getByRole("button", { name: "Pencocokan otomatis" }).click();
+    await expect(page.getByText("Pencocokan otomatis selesai.")).toBeVisible();
+    await expect(page.getByTestId("bank-line").filter({ hasText: "TRF MASUK" })).toContainText("Pembayaran invoice");
+    await expect(page.getByRole("button", { name: "Finalisasi" })).toBeDisabled();
+
+    const fee = page.getByTestId("bank-line").filter({ hasText: "BIAYA ADM" });
+    await fee.getByRole("button", { name: "Catat dari mutasi" }).click();
+    const ed = page.getByRole("dialog", { name: "Catat dari mutasi bank" });
+    await ed.getByLabel("Kategori").selectOption({ label: "6-1800 — Administrasi & Biaya Bank" });
+    await ed.getByRole("button", { name: "Catat & cocokkan" }).click();
+    await expect(page.getByText("Entri kas dicatat dan dicocokkan.")).toBeVisible();
+    const interest = page.getByTestId("bank-line").filter({ hasText: "BUNGA TABUNGAN" });
+    await interest.getByRole("button", { name: "Catat dari mutasi" }).click();
+    const ed2 = page.getByRole("dialog", { name: "Catat dari mutasi bank" });
+    // uang masuk: kategori beban tidak ditawarkan
+    expect((await ed2.getByLabel("Kategori").locator("option").allTextContents()).filter((o) => /^6-/.test(o))).toEqual([]);
+    await ed2.getByLabel("Kategori").selectOption({ label: "4-2200 — Pendapatan Bunga & Jasa Giro" });
+    await ed2.getByRole("button", { name: "Catat & cocokkan" }).click();
+    await expect(page.getByRole("status").filter({ hasText: /^Rp 0 ✓|0 ✓/ })).toBeVisible();
+
+    await page.getByRole("button", { name: "Finalisasi" }).click();
+    await page.getByRole("button", { name: "Ya, finalisasi" }).click();
+    await expect(page.getByText("Rekonsiliasi difinalisasi.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Buka kembali" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cocokkan" })).toHaveCount(0);
+    await page.goto("/reconciliation");
+    await expect(page.getByText(/Terakhir direkonsiliasi sampai/)).toBeVisible();
+
+    await page.getByRole("link", { name: "Bank E2E BCA" }).first().click();
+    await page.getByRole("button", { name: "Buka kembali" }).click();
+    await page.getByRole("dialog").getByLabel("Alasan").fill("Uji buka kembali E2E");
+    await page.getByRole("button", { name: "Buka kembali", exact: true }).last().click();
+    await expect(page.getByText("Rekonsiliasi dibuka kembali.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Finalisasi" })).toBeEnabled();
+
+    const sctx = await browser.newContext();
+    const sp = await sctx.newPage();
+    await login(sp, "staff");
+    expect((await sp.goto("/reconciliation"))!.status()).toBe(404);
+    for (const u of ["/api/finance/bank/overview", "/api/finance/bank/statements"]) expect((await sp.request.get(u)).status(), u).toBe(403);
+    expect((await sp.request.post("/api/finance/bank/statements/preview", { headers: ORIGIN, data: { text: "a" } })).status()).toBe(403);
     await sctx.close();
   });
 });

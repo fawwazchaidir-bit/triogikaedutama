@@ -13,6 +13,8 @@
  *     entri berlaku memiliki penyetuju, satu akun default aktif per jenis, pembalikan pembayaran memakai akun asal
  *  7. buku besar (tahap 2): jurnal manual seimbang & ≥ 2 baris, pembalikan persis berlawanan, tidak mendahului mulai pembukuan,
  *     tidak menyentuh akun kas/bank atau akun cadangan, jurnal saldo awal hanya akun neraca; akun sistem (3-2100, 4-1100, 1-1450) ada & aktif;
+ *  8. rekonsiliasi bank: rekening koran final — mutasi = selisih saldo, tiap baris cocok penuh, pencocokan sesuai transaksi buku, saldo menyambung,
+ *     saldo bank + transaksi beredar = saldo buku
  *     akun lawan entri kas bukan akun kas/bank maupun akun cadangan; PPN per pembayaran ≤ PPN invoice, PPh dipotong ≤ nilai sebelum PPN, pembalikan = cermin (uang, PPh, PPN)
  *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari,
  *     penerimaan invoice belum dialokasikan ke kas (saldo 1-1450), pembayaran mendahului saldo awal akunnya (dikecualikan dari buku).
@@ -143,6 +145,47 @@ async function main() {
     SELECT e."id"::text AS ref, c."code" || ' ' || c."name" AS detail
       FROM cash_entries e JOIN coa_accounts c ON c."id" = e."counterAccountId"
      WHERE c."code" IN ('4-1100', '1-1450', '3-2100') OR EXISTS (SELECT 1 FROM cash_accounts k WHERE k."coaAccountId" = c."id")`));
+
+  // ───────────── Rekonsiliasi bank ─────────────
+  add("rekonsiliasi bank: mutasi ≠ saldo awal/akhir atau baris belum cocok penuh (rekening koran final)", await q(`
+    SELECT s."id"::text AS ref, 'saldo awal=' || s."openingBalance" || ' akhir=' || s."closingBalance" || ' Σ mutasi=' || COALESCE(l.sum, 0) || ' baris belum cocok=' || COALESCE(l.bad, 0) AS detail
+      FROM bank_statements s
+      LEFT JOIN (SELECT x."statementId", SUM(x."amount") AS sum,
+                        COUNT(*) FILTER (WHERE x."amount" <> COALESCE((SELECT SUM(m."amount") FROM bank_matches m WHERE m."lineId" = x."id"), 0)) AS bad
+                   FROM bank_statement_lines x GROUP BY 1) l ON l."statementId" = s."id"
+     WHERE s."status" = 'FINALIZED' AND (s."openingBalance" + COALESCE(l.sum, 0) <> s."closingBalance" OR COALESCE(l.bad, 0) > 0)`));
+  add("rekonsiliasi bank: pencocokan tidak sesuai transaksi buku (nilai/akun/tanggal/status)", await q(`
+    WITH items AS (
+      SELECT a."id" AS acct, 'PAYMENT' AS t, p."id" AS sid, p."paymentDate" AS d, p."amount" AS amt FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."paymentDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'CASH_ENTRY', e."id", e."entryDate", CASE WHEN e."direction" = 'IN' THEN e."amount" ELSE -e."amount" END FROM cash_entries e JOIN cash_accounts a ON a."id" = e."cashAccountId" WHERE e."status" = 'APPROVED' AND e."entryDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'TRANSFER', t."id", t."transferDate", t."amount" FROM cash_transfers t JOIN cash_accounts a ON a."id" = t."toAccountId" WHERE t."transferDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'TRANSFER', t."id", t."transferDate", -t."amount" FROM cash_transfers t JOIN cash_accounts a ON a."id" = t."fromAccountId" WHERE t."transferDate" >= a."openingDate"
+    )
+    SELECT m."id"::text AS ref, m."sourceType" || ' ' || m."sourceId" || ' nilai=' || m."amount" || ' sumber=' || COALESCE(i.amt::text, 'TIDAK ADA') AS detail
+      FROM bank_matches m JOIN bank_statements s ON s."id" = m."statementId"
+      LEFT JOIN items i ON i.acct = m."cashAccountId" AND i.t = m."sourceType"::text AND i.sid = m."sourceId"
+     WHERE i.sid IS NULL OR i.amt <> m."amount" OR i.d > s."periodEnd" OR s."cashAccountId" <> m."cashAccountId"`));
+  add("rekonsiliasi bank: rekening koran final tidak menyambung / selisih rekonsiliasi ≠ 0", await q(`
+    WITH items AS (
+      SELECT a."id" AS acct, 'PAYMENT' AS t, p."id" AS sid, p."paymentDate" AS d, p."amount" AS amt FROM payments p JOIN cash_accounts a ON a."id" = p."cashAccountId" WHERE p."paymentDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'CASH_ENTRY', e."id", e."entryDate", CASE WHEN e."direction" = 'IN' THEN e."amount" ELSE -e."amount" END FROM cash_entries e JOIN cash_accounts a ON a."id" = e."cashAccountId" WHERE e."status" = 'APPROVED' AND e."entryDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'TRANSFER', t."id", t."transferDate", t."amount" FROM cash_transfers t JOIN cash_accounts a ON a."id" = t."toAccountId" WHERE t."transferDate" >= a."openingDate"
+      UNION ALL SELECT a."id", 'TRANSFER', t."id", t."transferDate", -t."amount" FROM cash_transfers t JOIN cash_accounts a ON a."id" = t."fromAccountId" WHERE t."transferDate" >= a."openingDate"
+    )
+    SELECT s."id"::text AS ref, 'bank=' || s."closingBalance" || ' + beredar=' || o.outst || ' ≠ buku=' || b.book AS detail
+      FROM bank_statements s JOIN cash_accounts a ON a."id" = s."cashAccountId"
+      CROSS JOIN LATERAL (SELECT a."openingBalance" + COALESCE(SUM(i.amt), 0) AS book FROM items i WHERE i.acct = s."cashAccountId" AND i.d <= s."periodEnd") b
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(SUM(i.amt), 0) AS outst FROM items i
+         WHERE i.acct = s."cashAccountId" AND i.d <= s."periodEnd"
+           AND NOT EXISTS (SELECT 1 FROM bank_matches m JOIN bank_statements ms ON ms."id" = m."statementId"
+                            WHERE m."cashAccountId" = i.acct AND m."sourceType"::text = i.t AND m."sourceId" = i.sid AND ms."periodStart" <= s."periodStart")
+      ) o
+     WHERE s."status" = 'FINALIZED' AND s."closingBalance" + o.outst <> b.book
+    UNION ALL
+    SELECT s."id"::text, 'saldo awal=' || s."openingBalance" || ' ≠ saldo akhir periode sebelumnya=' || p."closingBalance"
+      FROM bank_statements s JOIN bank_statements p ON p."cashAccountId" = s."cashAccountId" AND p."periodEnd" = s."periodStart" - 1
+     WHERE s."status" = 'FINALIZED' AND p."status" = 'FINALIZED' AND s."openingBalance" <> p."closingBalance"`));
 
   // Saldo per akun dihitung ulang di SQL murni (independen dari kode aplikasi).
   const balances = await q<{ name: string; isActive: boolean; bal: bigint }>(`

@@ -15,7 +15,7 @@ export default async function globalSetup() {
   const prisma = new PrismaClient({ datasources: { db: { url } } });
   try {
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE audit_logs, payments, cash_entries, cash_transfers, cash_accounts, coa_accounts, invoice_items, invoices, invoice_number_sequences, products, tax_configurations,
+      `TRUNCATE TABLE audit_logs, payments, cash_entries, cash_transfers, bank_matches, bank_statement_lines, bank_statements, tax_year_inputs, cash_accounts, coa_accounts, invoice_items, invoices, invoice_number_sequences, products, tax_configurations,
        customers, bank_accounts, company_settings, stored_files, sessions, rate_limit_buckets, users RESTART IDENTITY CASCADE`,
     );
   } finally {

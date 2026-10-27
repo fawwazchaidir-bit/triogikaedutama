@@ -6,7 +6,7 @@ import { storeFile } from "@/server/services/files";
 
 /** Seluruh tabel aplikasi (TRUNCATE tidak memicu trigger baris, sehingga aman untuk reset test). */
 const TABLES = [
-  "audit_logs", "payments", "cash_entries", "cash_transfers", "cash_accounts", "journal_lines", "journal_entries", "coa_accounts",
+  "audit_logs", "payments", "cash_entries", "cash_transfers", "cash_accounts", "journal_lines", "journal_entries", "bank_matches", "bank_statement_lines", "bank_statements", "tax_year_inputs", "coa_accounts",
   "invoice_items", "invoices", "invoice_number_sequences", "products", "tax_configurations",
   "customers", "bank_accounts", "company_settings", "stored_files", "sessions", "rate_limit_buckets", "users",
 ];
