@@ -1,6 +1,5 @@
-import { z } from "zod";
-import { readJson, route } from "@/server/http";
-import { readBooksLock, setBooksLock } from "@/server/services/books-lock";
+import { route } from "@/server/http";
+import { readBooksLock } from "@/server/services/books-lock";
 
+/** Tanggal kunci buku dipelihara dari periode yang ditutup (lihat /api/finance/periods); hanya dapat dibaca di sini. */
 export const GET = route(({ actor }) => readBooksLock(actor));
-export const PUT = route(async ({ req, actor }) => setBooksLock(actor, await readJson(req, z.unknown())));

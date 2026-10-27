@@ -7,7 +7,7 @@ import { createEntry } from "@/server/services/cash-entries";
 import { createJournal } from "@/server/services/journals";
 import { getBalanceSheet, getTrialBalance } from "@/server/services/finance-ledger";
 import { getCorporateTax, getVatSummary, getWithholdingRegister, postCorporateTaxJournal, setWithholdingRef, updateTaxProfile } from "@/server/services/finance-tax";
-import { setBooksLock } from "@/server/services/books-lock";
+import { lockBooksThrough } from "../helpers/lock";
 import { listCashAccounts } from "@/server/services/cash-accounts";
 import { todayIso } from "@/lib/format";
 import { AppError } from "@/server/errors";
@@ -127,7 +127,7 @@ describe("kesalahan pencatatan pajak yang lazim", () => {
     const p = await recordPayment(fx.finance, { invoiceId: i.id, paymentDate: d(1, 20), amount: 15_540_000, method: "Transfer" });
     const before = await getVatSummary(fx.finance, { from: d(1, 1), to: d(1, 31) });
     const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    await setBooksLock(fx.finance, { lockedThrough: yesterday, reason: "Tutup untuk uji" });
+    await lockBooksThrough(yesterday);
     // invoice bertanggal di periode tertutup tidak dapat diterbitkan (akan mengubah rekap PPN menurut invoice bulan itu); pembayaran mundur juga ditolak
     const late = await createDraft(fx.finance, demiChefInput(fx, { invoiceDate: d(1, 14), paymentTermDays: 30, lines: [{ ...demiChefInput(fx).lines[0]!, taxConfigId: fx.ppnId }] }));
     expect((await err(issueInvoice(fx.finance, late.id)))?.code).toBe("VALIDATION");

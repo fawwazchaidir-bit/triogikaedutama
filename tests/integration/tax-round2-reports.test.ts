@@ -9,7 +9,7 @@ import {
   getCorporateTax, getTaxOverview, getTaxProfile, getVatSummary, getWithholdingRegister, listTaxPayments, postCorporateTaxJournal,
   recordTaxPayment, runTaxReport, saveTaxYearInput, setWithholdingRef, updateTaxProfile,
 } from "@/server/services/finance-tax";
-import { setBooksLock } from "@/server/services/books-lock";
+import { lockBooksThrough } from "../helpers/lock";
 import { toCsv } from "@/server/export";
 import { todayIso } from "@/lib/format";
 import { AppError } from "@/server/errors";
@@ -212,7 +212,7 @@ describe("estimasi PPh badan", () => {
     // tanggal jurnal harus di dalam periode, dan buku yang sudah ditutup menolak
     expect((await err(postCorporateTaxJournal(fx.finance, { year: YEAR, date: `${YEAR - 1}-12-31` })))?.code).toBe("VALIDATION");
     const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    await setBooksLock(fx.finance, { lockedThrough: yesterday, reason: "Tutup untuk uji" });
+    await lockBooksThrough(yesterday);
     expect((await err(postCorporateTaxJournal(fx.finance, { year: YEAR, date: d(3, 3) })))?.code).toBe("VALIDATION");
     expect((await err(recordTaxPayment(fx.finance, { kind: "PPN", taxPeriod: "2026-01", entryDate: d(3, 3), cashAccountId: fx.bankAcctId, amount: 1000, reference: "NTPN" })))?.code).toBe("VALIDATION");
   });

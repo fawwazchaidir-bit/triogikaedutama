@@ -16,6 +16,8 @@
  *  8. rekonsiliasi bank: rekening koran final — mutasi = selisih saldo, tiap baris cocok penuh, pencocokan sesuai transaksi buku, saldo menyambung,
  *     saldo bank + transaksi beredar = saldo buku
  *     akun lawan entri kas bukan akun kas/bank maupun akun cadangan; PPN per pembayaran ≤ PPN invoice, PPh dipotong ≤ nilai sebelum PPN, pembalikan = cermin (uang, PPh, PPN)
+ *  9. tutup buku bulanan: periode tertutup berurutan dari bulan mulai pembukuan tanpa celah, kunci buku = akhir periode tertutup terakhir,
+ *     total aset pada foto tiap periode tertutup = hitung ulang SQL murni dari data sumber (mendeteksi perubahan diam-diam pada periode yang sudah ditutup)
  *  PERINGATAN (tidak menggagalkan): akun bersaldo negatif, akun nonaktif bersaldo ≠ 0, pengeluaran menunggu > 14 hari,
  *     penerimaan invoice belum dialokasikan ke kas (saldo 1-1450), pembayaran mendahului saldo awal akunnya (dikecualikan dari buku).
  */
@@ -186,6 +188,36 @@ async function main() {
     SELECT s."id"::text, 'saldo awal=' || s."openingBalance" || ' ≠ saldo akhir periode sebelumnya=' || p."closingBalance"
       FROM bank_statements s JOIN bank_statements p ON p."cashAccountId" = s."cashAccountId" AND p."periodEnd" = s."periodStart" - 1
      WHERE s."status" = 'FINALIZED' AND p."status" = 'FINALIZED' AND s."openingBalance" <> p."closingBalance"`));
+
+  // ───── 9. Tutup buku bulanan ─────
+  add("periode tertutup: celah urutan / mendahului mulai pembukuan", await q(`
+    WITH closed AS (SELECT "year" * 12 + "month" AS idx, "year", "month" FROM accounting_periods WHERE "status" = 'CLOSED'),
+         s AS (SELECT EXTRACT(YEAR FROM MIN("openingDate"))::int * 12 + EXTRACT(MONTH FROM MIN("openingDate"))::int AS first FROM cash_accounts)
+    SELECT c."year" || '-' || lpad(c."month"::text, 2, '0') AS ref, 'mulai pembukuan idx=' || COALESCE(s.first::text, '-') || ' periode idx=' || c.idx AS detail
+      FROM closed c CROSS JOIN s
+     WHERE s.first IS NULL OR c.idx < s.first OR (c.idx > s.first AND NOT EXISTS (SELECT 1 FROM closed p WHERE p.idx = c.idx - 1))`));
+  add("kunci buku ≠ akhir periode tertutup terakhir", await q(`
+    SELECT 'company_settings' AS ref, 'kunci=' || COALESCE(cs."booksLockedThrough"::text, '-') || ' seharusnya=' || COALESCE(x.e::text, '-') AS detail
+      FROM company_settings cs
+      LEFT JOIN LATERAL (SELECT MAX((make_date("year", "month", 1) + interval '1 month' - interval '1 day')::date) AS e FROM accounting_periods WHERE "status" = 'CLOSED') x ON true
+     WHERE cs."id" = 1 AND cs."booksLockedThrough" IS DISTINCT FROM x.e`));
+  add("foto periode tertutup ≠ hitung ulang SQL (total aset berubah sejak ditutup)", await q(`
+    SELECT ap."year" || '-' || lpad(ap."month"::text, 2, '0') AS ref,
+           'foto=' || (ap."snapshot"->'balanceSheet'->>'assets') || ' hitung ulang=' || o.assets AS detail
+      FROM accounting_periods ap
+      CROSS JOIN LATERAL (SELECT (make_date(ap."year", ap."month", 1) + interval '1 month' - interval '1 day')::date AS d) e
+      CROSS JOIN LATERAL (SELECT (
+          (SELECT COALESCE(SUM(a."openingBalance"), 0) FROM cash_accounts a WHERE a."openingDate" <= e.d)
+        + (SELECT COALESCE(SUM(p."amount" + p."withholdingAmount"), 0) FROM payments p LEFT JOIN cash_accounts a ON a."id" = p."cashAccountId"
+            WHERE p."paymentDate" <= e.d AND (p."cashAccountId" IS NULL OR p."paymentDate" >= a."openingDate"))
+        + (SELECT COALESCE(SUM(CASE WHEN en."direction" = 'IN' THEN en."amount" ELSE -en."amount" END), 0)
+             FROM cash_entries en JOIN coa_accounts c ON c."id" = en."counterAccountId"
+            WHERE en."status" = 'APPROVED' AND en."entryDate" <= e.d AND c."type" <> 'ASET')
+        + (SELECT COALESCE(SUM(l."debit" - l."credit"), 0)
+             FROM journal_lines l JOIN journal_entries j ON j."id" = l."journalId" JOIN coa_accounts c ON c."id" = l."accountId"
+            WHERE j."journalDate" <= e.d AND c."type" = 'ASET')
+        )::bigint AS assets) o
+     WHERE ap."status" = 'CLOSED' AND (ap."snapshot"->'balanceSheet'->>'assets')::bigint <> o.assets`));
 
   // Saldo per akun dihitung ulang di SQL murni (independen dari kode aplikasi).
   const balances = await q<{ name: string; isActive: boolean; bal: bigint }>(`

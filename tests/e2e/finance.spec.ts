@@ -125,7 +125,7 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
 
     await login(page, "finance");
     await page.goto("/dashboard");
-    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Rekonsiliasi Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pajak", "Pengaturan"]);
+    await expect(page.getByRole("navigation", { name: "Menu utama" }).getByRole("link")).toHaveText(["Dashboard", "Invoice", "Pelanggan", "Produk & Layanan", "Pembayaran", "Pengeluaran", "Kas & Bank", "Rekonsiliasi Bank", "Jurnal", "Laporan", "Laporan Keuangan", "Pajak", "Tutup Buku", "Pengaturan"]);
     await page.goto("/expenses?status=PENDING");
     await expect(page.getByText(/pengeluaran menunggu persetujuan/)).toBeVisible();
 
@@ -332,63 +332,6 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     expect((await page.request.get("/api/finance/journal-book?source=BUKAN")).status()).toBe(422);
   });
 
-  test("Penutupan buku: Finance menutup sampai kemarin → jurnal bertanggal ditutup ditolak (UI + API); dicabut → diterima; staff tidak punya akses", async ({ page, browser }) => {
-    await login(page, "finance");
-    await page.goto("/journals");
-    await expect(page.getByText("Buku belum ditutup.")).toBeVisible();
-    const yesterday = new Date(Date.now() + 7 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
-    await page.getByRole("button", { name: "Tutup buku" }).click();
-    let dlg = page.getByRole("dialog", { name: "Penutupan buku" });
-    await dlg.getByLabel("Buku ditutup sampai tanggal").fill(yesterday);
-    await expect(dlg.getByRole("button", { name: "Simpan" })).toBeDisabled(); // alasan wajib
-    await dlg.getByLabel("Alasan").fill("Laporan bulanan E2E final");
-    await dlg.getByRole("button", { name: "Simpan" }).click();
-    await expect(page.getByText("Buku ditutup.")).toBeVisible();
-    await expect(page.getByText(/Buku ditutup sampai/)).toBeVisible();
-
-    // jurnal bertanggal di periode tertutup ditolak dengan pesan jelas
-    await page.getByRole("button", { name: "Catat jurnal" }).click();
-    const jd = page.getByRole("dialog", { name: "Catat jurnal manual" });
-    await jd.getByLabel("Tanggal").fill(yesterday);
-    await jd.getByLabel("Keterangan").fill("Jurnal mundur E2E");
-    await jd.getByLabel("Akun baris 1").selectOption({ label: "6-2000 — Beban Penyusutan" });
-    await jd.getByLabel("Debit baris 1").fill("1000");
-    await jd.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
-    await jd.getByLabel("Kredit baris 2").fill("1000");
-    await jd.getByRole("button", { name: "Simpan jurnal" }).click();
-    await expect(jd.getByRole("alert").filter({ hasText: /Buku sudah ditutup sampai/ })).toBeVisible();
-    await jd.getByRole("button", { name: "Batal" }).click();
-
-    // API: pembayaran/entri bertanggal mundur juga ditolak; bertanggal hari ini diterima
-    const accts = (await (await page.request.get("/api/finance/cash-accounts/options")).json()).data as { id: string }[];
-    const cats = (await (await page.request.get("/api/finance/coa")).json()).data as { id: string; code: string }[];
-    const entry = (entryDate: string) => page.request.post("/api/finance/entries", { headers: ORIGIN, data: { entryDate, cashAccountId: accts[0]!.id, counterAccountId: cats.find((c) => c.code === "6-1600")!.id, amount: 5000, description: "ATK uji penutupan" } });
-    const back = await entry(yesterday);
-    expect(back.status()).toBe(422);
-    expect((await back.json()).error.message).toMatch(/Buku sudah ditutup sampai/);
-    expect((await entry(wib())).status()).toBe(201);
-
-    // staff: tidak dapat membaca/mengubah penutupan maupun jurnal
-    const sctx = await browser.newContext();
-    const sp = await sctx.newPage();
-    await login(sp, "staff");
-    expect((await sp.goto("/journals"))!.status()).toBe(404);
-    expect((await sp.request.get("/api/finance/books-lock")).status()).toBe(403);
-    expect((await sp.request.put("/api/finance/books-lock", { headers: ORIGIN, data: { lockedThrough: null, reason: "coba-coba staff" } })).status()).toBe(403);
-    expect((await sp.request.get("/api/finance/journal-book")).status()).toBe(403);
-    expect((await sp.request.post("/api/finance/journals", { headers: ORIGIN, data: {} })).status()).toBe(403);
-    await sctx.close();
-
-    // cabut penutupan → jurnal mundur diterima
-    await page.reload();
-    await page.getByRole("button", { name: "Ubah penutupan" }).click();
-    dlg = page.getByRole("dialog", { name: "Penutupan buku" });
-    await dlg.getByLabel("Alasan").fill("Audit selesai, kunci dicabut");
-    await dlg.getByRole("button", { name: "Cabut penutupan" }).click();
-    await expect(page.getByText("Penutupan buku dicabut.")).toBeVisible();
-    await expect(page.getByText("Buku belum ditutup.")).toBeVisible();
-    expect((await entry(yesterday)).status()).toBe(201);
-  });
   test("Pajak: Admin mengatur profil; pembayaran dengan PPh dipotong + PPN → register, rekap PPN, setoran, estimasi PPh badan + jurnal; staff tidak punya akses", async ({ page, browser }) => {
     // Admin: profil pajak (tarif diisi pengguna) + invoice ber-PPN
     await login(page, "admin");
@@ -562,5 +505,97 @@ test.describe("modul keuangan basis kas (UI + RBAC)", () => {
     for (const u of ["/api/finance/bank/overview", "/api/finance/bank/statements"]) expect((await sp.request.get(u)).status(), u).toBe(403);
     expect((await sp.request.post("/api/finance/bank/statements/preview", { headers: ORIGIN, data: { text: "a" } })).status()).toBe(403);
     await sctx.close();
+  });
+
+  test("Tutup buku bulanan: daftar periksa → peringatan diakui → ditutup → transaksi bertanggal bulan itu ditolak → dibuka kembali; kunci bebas dihapus; staff tidak punya akses", async ({ page, browser }) => {
+    await login(page, "finance");
+    await page.goto("/closing");
+    await expect(page.getByRole("heading", { name: "Tutup Buku", exact: true, level: 1 })).toBeVisible();
+    await expect(page.getByText("Belum ada bulan yang ditutup.")).toBeVisible();
+    const rows = page.getByTestId("period-row");
+    const first = rows.last(); // bulan mulai pembukuan (paling tua)
+    const key = (await first.getAttribute("data-period"))!;
+    const [yy, mm] = key.split("-").map(Number) as [number, number];
+    const lastDay = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+    const second = rows.nth((await rows.count()) - 2);
+    await expect(first).toHaveAttribute("data-state", "OPEN");
+    await expect(first.getByRole("button", { name: "Tutup bulan" })).toBeVisible();
+    await expect(second.getByRole("button", { name: "Tutup bulan" })).toHaveCount(0); // harus berurutan
+
+    // dialog: daftar periksa dari server; tombol tutup nonaktif sampai peringatan diakui + catatan terisi
+    await first.getByRole("button", { name: "Tutup bulan" }).click();
+    const dlg = page.getByRole("dialog", { name: /^Tutup buku / });
+    const checks = dlg.getByRole("list", { name: "Daftar periksa penutupan" });
+    await expect(checks).toBeVisible();
+    await expect(checks.locator('[data-check="previous"]')).toHaveAttribute("data-ok", "true");
+    await expect(checks.locator('[data-check="trial-balance"]')).toHaveAttribute("data-ok", "true");
+    const submit = dlg.getByRole("button", { name: /^Tutup / }).last();
+    await expect(submit).toBeDisabled();
+    const boxes = dlg.locator('input[type="checkbox"][name^="ack-"]');
+    for (let i = 0; i < (await boxes.count()); i++) await boxes.nth(i).check();
+    await expect(submit).toBeDisabled(); // catatan masih kosong
+    await dlg.getByLabel("Catatan penutupan").fill("Ditutup oleh uji E2E");
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(page.getByText(/ditutup\.$/).first()).toBeVisible();
+    await expect(first).toHaveAttribute("data-state", "CLOSED");
+    await expect(first.getByText("Cocok")).toBeVisible();
+    await expect(page.getByText(/Buku ditutup sampai/)).toBeVisible();
+    await expect(second.getByRole("button", { name: "Tutup bulan" })).toHaveCount(1); // kini giliran bulan berikutnya
+    await expect(first.getByRole("button", { name: "Buka kembali" })).toBeVisible();
+
+    // transaksi bertanggal bulan tertutup ditolak (UI jurnal + API); hari ini diterima
+    await page.goto("/journals");
+    await expect(page.getByText(/Buku ditutup sampai/)).toBeVisible();
+    await page.getByRole("button", { name: "Catat jurnal" }).click();
+    const jd = page.getByRole("dialog", { name: "Catat jurnal manual" });
+    await jd.getByLabel("Tanggal").fill(lastDay);
+    await jd.getByLabel("Keterangan").fill("Jurnal mundur E2E");
+    await jd.getByLabel("Akun baris 1").selectOption({ label: "6-2000 — Beban Penyusutan" });
+    await jd.getByLabel("Debit baris 1").fill("1000");
+    await jd.getByLabel("Akun baris 2").selectOption({ label: "1-2900 — Akumulasi Penyusutan" });
+    await jd.getByLabel("Kredit baris 2").fill("1000");
+    await jd.getByRole("button", { name: "Simpan jurnal" }).click();
+    await expect(jd.getByRole("alert").filter({ hasText: /Buku sudah ditutup sampai/ })).toBeVisible();
+    await jd.getByRole("button", { name: "Batal" }).click();
+
+    const accts = (await (await page.request.get("/api/finance/cash-accounts/options")).json()).data as { id: string }[];
+    const cats = (await (await page.request.get("/api/finance/coa")).json()).data as { id: string; code: string }[];
+    const entry = (entryDate: string) => page.request.post("/api/finance/entries", { headers: ORIGIN, data: { entryDate, cashAccountId: accts[0]!.id, counterAccountId: cats.find((c) => c.code === "6-1600")!.id, amount: 5000, description: "ATK uji penutupan" } });
+    const back = await entry(lastDay);
+    expect(back.status()).toBe(422);
+    expect((await back.json()).error.message).toMatch(/Buku sudah ditutup sampai/);
+    expect((await entry(wib())).status()).toBe(201);
+
+    // API periode: tutup bulan kedua tanpa catatan ditolak; kunci bebas (PUT) sudah tidak ada
+    const apiList = await (await page.request.get("/api/finance/periods")).json();
+    expect(apiList.data.lockedThrough).toBe(lastDay);
+    expect(apiList.data.lockConsistent).toBe(true);
+    const noNote = await page.request.post("/api/finance/periods/close", { headers: ORIGIN, data: { year: yy, month: mm + 1 > 12 ? 1 : mm + 1, acknowledge: [], note: "" } });
+    expect(noNote.status()).toBe(422);
+    expect((await page.request.put("/api/finance/books-lock", { headers: ORIGIN, data: { lockedThrough: null, reason: "coba-coba" } })).status()).toBe(405);
+
+    // staff: tidak dapat melihat/menutup/membuka
+    const sctx = await browser.newContext();
+    const sp = await sctx.newPage();
+    await login(sp, "staff");
+    expect((await sp.goto("/closing"))!.status()).toBe(404);
+    expect((await sp.request.get("/api/finance/periods")).status()).toBe(403);
+    expect((await sp.request.get("/api/finance/periods/checklist?year=2026&month=1")).status()).toBe(403);
+    expect((await sp.request.post("/api/finance/periods/close", { headers: ORIGIN, data: { year: yy, month: mm, acknowledge: [], note: "coba staff" } })).status()).toBe(403);
+    expect((await sp.request.post("/api/finance/periods/reopen", { headers: ORIGIN, data: { year: yy, month: mm, reason: "coba staff" } })).status()).toBe(403);
+    await sctx.close();
+
+    // buka kembali: alasan wajib; sesudahnya transaksi bulan itu diterima lagi
+    await page.goto("/closing");
+    await first.getByRole("button", { name: "Buka kembali" }).click();
+    const rd = page.getByRole("dialog", { name: /^Buka kembali / });
+    await expect(rd.getByRole("button", { name: "Buka kembali" })).toBeDisabled();
+    await rd.getByLabel("Alasan").fill("Uji buka kembali E2E");
+    await rd.getByRole("button", { name: "Buka kembali" }).click();
+    await expect(page.getByText(/dibuka kembali\.$/).first()).toBeVisible();
+    await expect(first).toHaveAttribute("data-state", "REOPENED");
+    await expect(page.getByText("Belum ada bulan yang ditutup.")).toBeVisible();
+    expect((await entry(lastDay)).status()).toBe(201);
   });
 });

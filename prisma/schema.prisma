@@ -146,23 +146,25 @@ model User {
   updatedAt          DateTime  @updatedAt
 
   sessions            Session[]
-  customers           Customer[]      @relation("CustomerCreatedBy")
-  invoicesCreated     Invoice[]       @relation("InvoiceCreatedBy")
-  invoicesIssued      Invoice[]       @relation("InvoiceIssuedBy")
-  invoicesCancel      Invoice[]       @relation("InvoiceCancelledBy")
-  invoicesSubmitted   Invoice[]       @relation("InvoiceSubmittedBy")
-  invoicesRejected    Invoice[]       @relation("InvoiceRejectedBy")
+  customers           Customer[]         @relation("CustomerCreatedBy")
+  invoicesCreated     Invoice[]          @relation("InvoiceCreatedBy")
+  invoicesIssued      Invoice[]          @relation("InvoiceIssuedBy")
+  invoicesCancel      Invoice[]          @relation("InvoiceCancelledBy")
+  invoicesSubmitted   Invoice[]          @relation("InvoiceSubmittedBy")
+  invoicesRejected    Invoice[]          @relation("InvoiceRejectedBy")
   payments            Payment[]
   files               StoredFile[]
-  entriesCreated      CashEntry[]     @relation("CashEntryCreatedBy")
-  entriesApproved     CashEntry[]     @relation("CashEntryApprovedBy")
-  entriesRejected     CashEntry[]     @relation("CashEntryRejectedBy")
-  transfersCreated    CashTransfer[]  @relation("CashTransferCreatedBy")
+  entriesCreated      CashEntry[]        @relation("CashEntryCreatedBy")
+  entriesApproved     CashEntry[]        @relation("CashEntryApprovedBy")
+  entriesRejected     CashEntry[]        @relation("CashEntryRejectedBy")
+  transfersCreated    CashTransfer[]     @relation("CashTransferCreatedBy")
   taxYearInputs       TaxYearInput[]
-  statementsCreated   BankStatement[] @relation("BankStatementCreatedBy")
-  statementsFinalized BankStatement[] @relation("BankStatementFinalizedBy")
+  statementsCreated   BankStatement[]    @relation("BankStatementCreatedBy")
+  statementsFinalized BankStatement[]    @relation("BankStatementFinalizedBy")
   bankMatchesMade     BankMatch[]
-  journalsCreated     JournalEntry[]  @relation("JournalCreatedBy")
+  periodsClosed       AccountingPeriod[] @relation("PeriodClosedBy")
+  periodsReopened     AccountingPeriod[] @relation("PeriodReopenedBy")
+  journalsCreated     JournalEntry[]     @relation("JournalCreatedBy")
   auditLogs           AuditLog[]
 
   @@map("users")
@@ -421,6 +423,40 @@ model BankMatch {
   @@index([lineId])
   @@index([statementId])
   @@map("bank_matches")
+}
+
+// ───────────────────────────── Penutupan periode bulanan ─────────────────────────────
+
+enum PeriodStatus {
+  OPEN
+  CLOSED
+}
+
+/// Penutupan buku per bulan, berurutan (bulan M hanya dapat ditutup bila M−1 sudah ditutup; dibuka kembali dari yang terakhir). Setiap penutupan menyimpan
+/// "foto" neraca saldo akhir bulan beserta hash-nya sehingga perubahan diam-diam pada periode tertutup terdeteksi. Tanggal kunci
+/// `company_settings.booksLockedThrough` DIPELIHARA OLEH TRIGGER dari periode yang CLOSED (akhir bulan terakhir).
+model AccountingPeriod {
+  id           String       @id @default(uuid()) @db.Uuid
+  year         Int
+  month        Int
+  status       PeriodStatus @default(CLOSED)
+  closedAt     DateTime?
+  closedById   String?      @db.Uuid
+  note         String?
+  /// Peringatan lunak yang diakui saat menutup: [{ id, label, detail }].
+  acknowledged Json?
+  snapshot     Json?
+  snapshotHash String?
+  reopenedAt   DateTime?
+  reopenedById String?      @db.Uuid
+  reopenReason String?
+  createdAt    DateTime     @default(now())
+
+  closedBy   User? @relation("PeriodClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+  reopenedBy User? @relation("PeriodReopenedBy", fields: [reopenedById], references: [id], onDelete: Restrict)
+
+  @@unique([year, month])
+  @@map("accounting_periods")
 }
 
 enum CorporateTaxRegime {

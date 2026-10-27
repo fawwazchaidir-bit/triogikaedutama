@@ -5,7 +5,7 @@ import { createDraft, issueInvoice } from "@/server/services/invoices";
 import { recordPayment, reversePayment } from "@/server/services/payments";
 import { approveEntry, createEntry, createTransfer, reverseTransfer } from "@/server/services/cash-entries";
 import { updateCashAccount } from "@/server/services/cash-accounts";
-import { setBooksLock } from "@/server/services/books-lock";
+import { lockBooksThrough } from "../helpers/lock";
 import {
   autoMatchStatement, createEntryForLine, createStatement, deleteStatement, finalizeStatement, getReconOverview, getStatementWorkspace,
   listStatements, matchLine, reopenStatement, unmatchLine,
@@ -200,7 +200,7 @@ describe("catat entri dari mutasi & kondisi tepi buku", () => {
     expect(entries.map((e) => [e.direction, Number(e.amount), e.entryDate.toISOString().slice(0, 10)])).toEqual([["OUT", 15_000, d(1, 10)], ["OUT", 1_500_000, d(1, 12)]]);
     // periode tertutup: pencatatan dari mutasi ditolak tanpa sisa
     const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    await setBooksLock(fx.finance, { lockedThrough: yesterday, reason: "Tutup untuk uji" });
+    await lockBooksThrough(yesterday);
     expect((await err(createEntryForLine(fx.finance, interest!.id, { counterAccountId: c("4-2200") })))?.code).toBe("VALIDATION");
     expect(await prisma.cashEntry.count()).toBe(2);
   });

@@ -224,7 +224,8 @@ export interface CorporateTaxReport {
 
 const ctQuerySchema = z.object({ year: yearSchema, month: z.preprocess((v) => (v === null || v === "" ? undefined : v), z.coerce.number().int().min(1, "Bulan 1–12").max(12, "Bulan 1–12").optional()) });
 
-async function corporateTaxContext(raw: unknown, db: Tx | typeof prisma = prisma): Promise<CorporateTaxReport> {
+/** Hitung estimasi tanpa pemeriksaan izin (untuk layanan lain, mis. daftar periksa tutup buku). */
+export async function computeCorporateTax(raw: unknown, db: Tx | typeof prisma = prisma): Promise<CorporateTaxReport> {
   const q = parseInput(ctQuerySchema, raw ?? {});
   const profile = await readProfile(db);
   const today = todayIso(env().APP_TIMEZONE);
@@ -272,7 +273,7 @@ async function corporateTaxContext(raw: unknown, db: Tx | typeof prisma = prisma
 
 export async function getCorporateTax(actor: Actor, raw: unknown): Promise<CorporateTaxReport> {
   assertCan(actor, "finance:view");
-  return corporateTaxContext(raw);
+  return computeCorporateTax(raw);
 }
 
 const ctPostSchema = ctQuerySchema.extend({ date: isoDate.optional() });
@@ -285,7 +286,7 @@ export async function postCorporateTaxJournal(actor: Actor, raw: unknown) {
   const q = parseInput(ctPostSchema, raw);
   const id = await transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('tax_journal'))`;
-    const ctx = await corporateTaxContext({ year: q.year, month: q.month }, tx);
+    const ctx = await computeCorporateTax({ year: q.year, month: q.month }, tx);
     if (!ctx.suggestion) throw Errors.conflict("Pembukuan PPh sudah sesuai dengan estimasi (atau estimasi dinonaktifkan di profil pajak).");
     const date = q.date ?? ctx.suggestion.date;
     if (date < ctx.from || date > ctx.to) throw Errors.validation(`Tanggal jurnal harus di dalam periode estimasi (${ctx.from} s.d. ${ctx.to}).`, { date: "Di luar periode" });
@@ -389,7 +390,7 @@ export async function runTaxReport(actor: Actor, type: string, raw: unknown = {}
     };
   }
   if (type === "corporate-tax") {
-    const c = await corporateTaxContext(raw);
+    const c = await computeCorporateTax(raw);
     const e = c.estimate;
     const row = (item: string, amount: number | null): Record<string, string | number | null> => ({ item, amount });
     return {

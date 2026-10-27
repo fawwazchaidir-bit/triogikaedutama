@@ -50,7 +50,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
         actions={canRecord ? <JournalCreate accounts={pickable} startDate={start} /> : undefined} />
       {!start && <div className="mb-4"><Notice tone="warn">Belum ada akun kas/bank, sehingga tanggal mulai pembukuan belum ada. Tambahkan akun beserta saldo awal di Pengaturan → Keuangan.</Notice></div>}
       <div className="mb-4"><Notice tone="info">Saldo awal akun kas/bank dijurnal otomatis terhadap <strong>3-2100 Saldo Laba</strong>. Saldo awal aset tetap, utang, dan modal diinput lewat <strong>jurnal saldo awal</strong> (seimbang) bertanggal tepat pada tanggal mulai pembukuan{start ? ` (${formatDateShort(start)})` : ""}. Pajak (PPN, PPh) belum diotomasi.</Notice></div>
-      <div className="mb-4"><BooksLockPanel lockedThrough={lock} canLock={can(user.role, "books:lock")} /></div>
+      <div className="mb-4"><BooksLockPanel lockedThrough={lock} /></div>
       <FilterBar action="/journals" resetHref="/journals">
         <FilterField label="Dari tanggal"><input type="date" name="from" defaultValue={f.from} className={filterInput} /></FilterField>
         <FilterField label="Sampai tanggal"><input type="date" name="to" defaultValue={f.to} className={filterInput} /></FilterField>

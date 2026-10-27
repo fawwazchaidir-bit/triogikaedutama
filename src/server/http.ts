@@ -49,7 +49,8 @@ export async function readJson<T>(req: Request, schema: ZodType<T>, maxBytes = M
   return schema.parse(body);
 }
 
-function errorResponse(err: unknown): NextResponse {
+/** Ubah galat apa pun menjadi respons JSON yang aman (pesan guard database kita ditulis untuk pengguna; sisanya disamarkan). */
+export function errorResponse(err: unknown): NextResponse {
   if (err instanceof AppError) {
     return NextResponse.json(
       { error: { code: err.code, message: err.message, fieldErrors: err.fieldErrors, ...err.extra } },
@@ -74,6 +75,9 @@ function errorResponse(err: unknown): NextResponse {
   }
   // Guard database (trigger/CHECK) — pesan trigger kita memang ditulis untuk pengguna.
   const msg = err instanceof Error ? err.message : "";
+  // Trigger kunci buku menolak transaksi yang kalah balapan dengan penutupan bulan (service sudah memeriksa lebih dulu; ini jaring terakhir).
+  const locked = /Buku sudah ditutup sampai \d{4}-\d{2}-\d{2}: [^\n"]*/.exec(msg)?.[0];
+  if (locked) return NextResponse.json({ error: { code: "VALIDATION", message: locked } }, { status: 422 });
   if (/restrict_violation|bersifat append-only|sudah terbit|tidak boleh dihapus|hanya dapat diubah saat invoice/i.test(msg)) {
     const readable = /(Invoice [^\n]*|Rincian invoice[^\n]*|\w+ bersifat append-only[^\n]*)/.exec(msg)?.[1];
     return NextResponse.json(

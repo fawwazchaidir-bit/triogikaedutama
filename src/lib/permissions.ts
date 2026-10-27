@@ -117,6 +117,7 @@ export const NAV_ITEMS = [
   { href: "/reports", label: "Laporan", anyOf: ["report:view"] },
   { href: "/statements", label: "Laporan Keuangan", anyOf: ["finance:view"] },
   { href: "/taxes", label: "Pajak", anyOf: ["finance:view"] },
+  { href: "/closing", label: "Tutup Buku", anyOf: ["finance:view"] },
   { href: "/audit-log", label: "Audit Log", anyOf: ["audit:view"] },
   { href: "/settings", label: "Pengaturan", anyOf: ["settings:view"] },
 ] as const satisfies readonly { href: string; label: string; anyOf: readonly Permission[] }[];

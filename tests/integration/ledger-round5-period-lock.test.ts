@@ -8,7 +8,8 @@ import { approveEntry, cancelPendingEntry, createEntry, createTransfer, rejectEn
 import { createCoaAccount } from "@/server/services/finance-coa";
 import { createJournal, reverseJournal } from "@/server/services/journals";
 import { getBalanceSheet, getTrialBalance } from "@/server/services/finance-ledger";
-import { getBooksLock, readBooksLock, setBooksLock } from "@/server/services/books-lock";
+import { getBooksLock } from "@/server/services/books-lock";
+import { lockBooksThrough } from "../helpers/lock";
 import { todayIso } from "@/lib/format";
 import { AppError } from "@/server/errors";
 
@@ -28,7 +29,7 @@ beforeEach(async () => {
 });
 afterAll(async () => { await prisma.$disconnect(); });
 
-const lock = (d: string | null, actor = fx.finance, reason = "Laporan bulanan final") => setBooksLock(actor, { lockedThrough: d, reason });
+const lock = (d: string | null) => lockBooksThrough(d);
 const snapshot = async (asOf: string) => JSON.stringify((await getTrialBalance(fx.finance, { to: asOf })).rows.map((r) => [r.code, r.net]));
 const jr = (date: string, amount = 10_000) => createJournal(fx.finance, { journalDate: date, description: "Penyusutan", lines: [{ accountId: c("6-2000"), debit: amount, credit: 0 }, { accountId: c("1-2900"), debit: 0, credit: amount }] });
 
@@ -41,7 +42,7 @@ async function februaryBooks() {
   return { inv, pay, ent, tr, j };
 }
 
-describe("tanpa penutupan: perilaku lama tidak berubah", () => {
+describe("tanpa kunci: perilaku lama tidak berubah", () => {
   it("default kosong; transaksi bertanggal mundur dapat dicatat", async () => {
     expect(await getBooksLock()).toBeNull();
     await februaryBooks();
@@ -120,40 +121,9 @@ describe("transaksi pada periode tertutup ditolak (service & SQL), koreksi hari 
   });
 });
 
-describe("mengelola penutupan", () => {
-  it("izin: Finance & Admin boleh mengubah; Staff tidak boleh mengubah maupun memakai; semua yang punya finance:view boleh membaca", async () => {
-    expect((await err(lock("2026-02-28", fx.staff)))?.code).toBe("FORBIDDEN");
-    expect((await err(readBooksLock(fx.staff)))?.code).toBe("FORBIDDEN");
-    expect(await err(lock("2026-02-28", fx.admin))).toBeNull();
-    expect((await readBooksLock(fx.finance)).lockedThrough).toBe("2026-02-28");
-  });
-
-  it("validasi: hari ini/masa depan/tanggal tak sah/alasan pendek/tanpa perubahan ditolak", async () => {
-    const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
-    for (const d of [today, tomorrow, "2999-01-01", "2026-02-30", "bukan-tanggal", ""]) expect((await err(lock(d)))?.code, d).toBe("VALIDATION");
-    expect((await err(setBooksLock(fx.finance, { lockedThrough: "2026-02-28", reason: "pdk" })))?.code).toBe("VALIDATION");
-    expect((await err(setBooksLock(fx.finance, { lockedThrough: undefined, reason: "alasan cukup" })))?.code).toBe("VALIDATION");
-    expect(await getBooksLock()).toBeNull();
-    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    expect(await err(lock(yesterday))).toBeNull(); // kemarin = batas terjauh yang diizinkan
-    expect((await err(lock(yesterday)))?.code).toBe("CONFLICT");
-  });
-
-  it("buka kembali & cabut: tercatat di audit dengan alasan; sesudahnya transaksi mundur diterima lagi", async () => {
-    await lock("2026-02-28");
-    expect((await err(jr("2026-02-10")))?.code).toBe("VALIDATION");
-    await lock("2026-01-31", fx.finance, "Koreksi akrual Februari");
-    expect(await err(jr("2026-02-10"))).toBeNull();
-    expect((await err(jr("2026-01-31")))?.code).toBe("VALIDATION");
-    await lock(null, fx.admin, "Audit selesai, kunci dicabut");
-    expect(await getBooksLock()).toBeNull();
-    expect(await err(jr("2026-01-31"))).toBeNull();
-    const log = await prisma.auditLog.findMany({ where: { action: { in: ["books.lock", "books.reopen"] } }, orderBy: { createdAt: "asc" } });
-    expect(log.map((l) => l.action)).toEqual(["books.lock", "books.reopen", "books.reopen"]);
-    expect(log.map((l) => l.reason)).toEqual(["Laporan bulanan final", "Koreksi akrual Februari", "Audit selesai, kunci dicabut"]);
-  });
-
-  it("balapan: perubahan penutupan menunggu transaksi pencatatan yang sedang berjalan (tak ada transaksi lolos di sela)", async () => {
+describe("penegakan kunci terhadap transaksi yang sedang berjalan", () => {
+  it("pengunci menunggu transaksi pencatatan yang sedang berjalan (tak ada transaksi lolos di sela)", async () => {
+    // Pengunci sesungguhnya (penutupan bulan) diuji di periods-*.test.ts; di sini cukup memastikan trigger pencatatan memakai kunci bersama.
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const jid = crypto.randomUUID();
@@ -164,14 +134,16 @@ describe("mengelola penutupan", () => {
     }, { timeout: 20_000 });
     await new Promise((r) => setTimeout(r, 300));
     let done = false;
-    const t2 = lock("2026-02-28").then(() => { done = true; });
+    const t2 = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('books_lock'))`;
+      await tx.companySettings.update({ where: { id: 1 }, data: { booksLockedThrough: new Date("2026-02-28T00:00:00Z") } });
+    }).then(() => { done = true; });
     await new Promise((r) => setTimeout(r, 500));
-    expect(done, "penutupan harus menunggu transaksi yang sedang mencatat").toBe(false);
+    expect(done, "pengunci harus menunggu transaksi yang sedang mencatat").toBe(false);
     release();
     await t1;
     await t2;
     expect(await getBooksLock()).toBe("2026-02-28");
-    // jurnal tadi sah (dimulai sebelum penutupan) — dan sekarang periodenya terkunci untuk yang berikutnya
-    expect((await err(jr("2026-02-20")))?.code).toBe("VALIDATION");
+    expect((await err(jr("2026-02-20")))?.code).toBe("VALIDATION"); // jurnal tadi sah (mulai sebelum kunci); sekarang periodenya terkunci
   });
 });
